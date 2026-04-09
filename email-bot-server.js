@@ -79,23 +79,16 @@ async function connectToIonos() {
 }
 
 // ============================================================================
-// OBTENER CORREOS DESDE LAS 07:00 DE HOY HASTA AHORA
+// OBTENER ÚLTIMOS CORREOS RECIENTES
 // ============================================================================
 async function fetchEmailsFromToday(connection) {
   try {
     // Seleccionar INBOX
     await connection.openBox('INBOX', false);
     
-    // Calcular rango de tiempo:
-    // - Inicio: 07:00 de hoy
-    // - Fin: ahora
-    const now = new Date();
-    const rangeStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0);
-    const rangeEnd = now;
+    console.log(`🔍 Buscando últimos correos recientes...`);
     
-    console.log(`🔍 Buscando correos desde ${rangeStart.toLocaleString('es-ES')} hasta ${rangeEnd.toLocaleString('es-ES')}`);
-    
-    // Obtener últimos 100 correos (será más rápido y evita problemas con fechas)
+    // Obtener últimos 50 correos (los más recientes)
     const searchCriteria = ['ALL'];
     const fetchOptions = {
       bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)',
@@ -105,9 +98,9 @@ async function fetchEmailsFromToday(connection) {
     const allMessages = await connection.search(searchCriteria, fetchOptions);
     console.log(`📧 Se encontraron ${allMessages.length} correos totales`);
     
-    // Tomar solo los últimos 100 (los más recientes)
-    const recentMessages = allMessages.slice(Math.max(0, allMessages.length - 100));
-    console.log(`🔍 Procesando últimos ${recentMessages.length} correos...`);
+    // Tomar solo los últimos 50 (los más recientes)
+    const recentMessages = allMessages.slice(Math.max(0, allMessages.length - 50));
+    console.log(`✅ Procesando últimos ${recentMessages.length} correos...`);
     
     const emails = [];
     
@@ -118,46 +111,41 @@ async function fetchEmailsFromToday(connection) {
         const subject = (msg.headers && msg.headers.subject && msg.headers.subject[0]) ? msg.headers.subject[0] : '(sin asunto)';
         const dateStr = (msg.headers && msg.headers.date && msg.headers.date[0]) ? msg.headers.date[0] : new Date().toISOString();
         
-        // Parsear fecha - intentar múltiples formatos
+        // Parsear fecha
         let date = new Date(dateStr);
         if (isNaN(date.getTime())) {
-          // Si falla, usar fecha actual
           date = new Date();
-          console.log(`⚠️ No se pudo parsear fecha: ${dateStr}, usando fecha actual`);
         }
         
-        // Filtrar por rango de tiempo en JavaScript
-        if (date >= rangeStart && date <= rangeEnd) {
-          let preview = '';
-          
-          // Intentar obtener vista previa del cuerpo
-          try {
-            const parts = ImapSimple.getParts(msg.attributes.struct);
-            for (let part of parts) {
-              if (part.type === 'text') {
-                const partData = await connection.getPartData(msg, part);
-                preview = partData.toString().substring(0, 200).replace(/\n/g, ' ');
-                break;
-              }
+        let preview = '';
+        
+        // Intentar obtener vista previa del cuerpo
+        try {
+          const parts = ImapSimple.getParts(msg.attributes.struct);
+          for (let part of parts) {
+            if (part.type === 'text') {
+              const partData = await connection.getPartData(msg, part);
+              preview = partData.toString().substring(0, 200).replace(/\n/g, ' ');
+              break;
             }
-          } catch (err) {
-            preview = '(no se pudo obtener preview)';
           }
-          
-          emails.push({
-            from,
-            subject,
-            preview: preview || '(sin contenido)',
-            date,
-            uid: msg.attributes.uid
-          });
+        } catch (err) {
+          preview = '(no se pudo obtener preview)';
         }
+        
+        emails.push({
+          from,
+          subject,
+          preview: preview || '(sin contenido)',
+          date,
+          uid: msg.attributes.uid
+        });
       } catch (err) {
         console.log(`⚠️ Error procesando correo: ${err.message}`);
       }
     }
     
-    console.log(`✅ Se filtraron ${emails.length} correos en el rango especificado`);
+    console.log(`✅ Se procesaron ${emails.length} correos`);
     return emails.sort((a, b) => b.date - a.date); // Ordenar por fecha descendente
     
   } catch (error) {
@@ -414,4 +402,3 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (error) => {
   console.error('❌ Excepción no capturada:', error);
 });
-
