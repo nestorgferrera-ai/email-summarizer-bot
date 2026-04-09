@@ -95,48 +95,56 @@ async function fetchEmailsFromToday(connection) {
     
     console.log(`🔍 Buscando correos desde ${rangeStart.toLocaleString('es-ES')} hasta ${rangeEnd.toLocaleString('es-ES')}`);
     
-    // Buscar correos usando sintaxis correcta de imap-simple
-    const searchCriteria = ['SINCE', rangeStart.toISOString().split('T')[0], 'BEFORE', rangeEnd.toISOString().split('T')[0]];
+    // Obtener últimos 50 correos (sin filtro de rango, lo haremos en JavaScript)
+    const searchCriteria = ['ALL'];
     const fetchOptions = {
       bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)',
       struct: true
     };
     
-    const messages = await connection.search(searchCriteria, fetchOptions);
-    console.log(`📧 Se encontraron ${messages.length} correos`);
+    const allMessages = await connection.search(searchCriteria, fetchOptions);
+    console.log(`📧 Se encontraron ${allMessages.length} correos totales`);
     
     const emails = [];
     
-    for (let msg of messages) {
+    for (let msg of allMessages) {
       try {
-        const parts = ImapSimple.getParts(msg.attributes.struct);
-        let preview = '';
-        
-        // Intentar obtener vista previa del cuerpo
-        for (let part of parts) {
-          if (part.type === 'text') {
-            const partData = await connection.getPartData(msg, part);
-            preview = partData.toString().substring(0, 200).replace(/\n/g, ' ');
-            break;
-          }
-        }
-        
         const from = msg.headers.from ? msg.headers.from[0] : 'Desconocido';
         const subject = msg.headers.subject ? msg.headers.subject[0] : '(sin asunto)';
         const date = msg.headers.date ? new Date(msg.headers.date[0]) : new Date();
         
-        emails.push({
-          from,
-          subject,
-          preview: preview || '(sin contenido)',
-          date,
-          uid: msg.attributes.uid
-        });
+        // Filtrar por rango de tiempo en JavaScript
+        if (date >= rangeStart && date <= rangeEnd) {
+          let preview = '';
+          
+          // Intentar obtener vista previa del cuerpo
+          try {
+            const parts = ImapSimple.getParts(msg.attributes.struct);
+            for (let part of parts) {
+              if (part.type === 'text') {
+                const partData = await connection.getPartData(msg, part);
+                preview = partData.toString().substring(0, 200).replace(/\n/g, ' ');
+                break;
+              }
+            }
+          } catch (err) {
+            preview = '(no se pudo obtener preview)';
+          }
+          
+          emails.push({
+            from,
+            subject,
+            preview: preview || '(sin contenido)',
+            date,
+            uid: msg.attributes.uid
+          });
+        }
       } catch (err) {
         console.log(`⚠️ Error procesando correo: ${err.message}`);
       }
     }
     
+    console.log(`✅ Se filtraron ${emails.length} correos en el rango especificado`);
     return emails.sort((a, b) => b.date - a.date); // Ordenar por fecha descendente
     
   } catch (error) {
