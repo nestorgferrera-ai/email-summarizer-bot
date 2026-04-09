@@ -95,8 +95,12 @@ async function fetchEmailsFromToday(connection) {
     
     console.log(`🔍 Buscando correos desde ${rangeStart.toLocaleString('es-ES')} hasta ${rangeEnd.toLocaleString('es-ES')}`);
     
-    // Buscar correos en el rango
+    // Buscar correos usando sintaxis correcta de imap-simple
     const searchCriteria = ['SINCE', rangeStart.toISOString().split('T')[0], 'BEFORE', rangeEnd.toISOString().split('T')[0]];
+    const fetchOptions = {
+      bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)',
+      struct: true
+    };
     
     const messages = await connection.search(searchCriteria, fetchOptions);
     console.log(`📧 Se encontraron ${messages.length} correos`);
