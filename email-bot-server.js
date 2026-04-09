@@ -14,6 +14,20 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ============================================================================
+// CONFIGURAR CORS (permitir requests desde navegador)
+// ============================================================================
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// ============================================================================
 // CONFIGURACIÓN
 // ============================================================================
 const CONFIG = {
@@ -302,6 +316,43 @@ app.post('/trigger', async (req, res) => {
   try {
     await sendDailyEmailSummary();
     res.json({ status: 'success', message: 'Resumen enviado' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// Trigger simplificado (testing sin IMAP)
+app.post('/trigger-test', async (req, res) => {
+  console.log('🧪 Trigger TEST ejecutado (sin IMAP)');
+  
+  try {
+    // Emails de prueba
+    const testEmails = [
+      {
+        from: 'adeslas@asegurador.com',
+        subject: 'Rechazo de facturas EMT marzo',
+        preview: 'Rechazo de 3 facturas por falta de justificante',
+        date: new Date()
+      },
+      {
+        from: 'dr.garcia@clinicabandama.com',
+        subject: 'Informe de alta urgente',
+        preview: 'Necesito informe de Juan Martínez para derivación',
+        date: new Date()
+      },
+      {
+        from: 'rrhh@clinicabandama.com',
+        subject: 'Isabel Jiménez - Entrevista confirmada',
+        preview: 'Psiquiatra recién residenciada. Disponible mañana 16:00',
+        date: new Date()
+      }
+    ];
+    
+    // Resumir y enviar
+    const summary = await summarizeEmailsWithClaude(testEmails);
+    await sendTelegramMessage(summary);
+    
+    res.json({ status: 'success', message: 'Resumen TEST enviado', summary: summary });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
