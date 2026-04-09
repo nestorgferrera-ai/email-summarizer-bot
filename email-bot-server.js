@@ -79,7 +79,7 @@ async function connectToIonos() {
 }
 
 // ============================================================================
-// OBTENER CORREOS DESDE LAS 07:00 DEL DÍA ANTERIOR HASTA 07:00 DE HOY
+// OBTENER CORREOS DESDE LAS 07:00 DE HOY HASTA AHORA
 // ============================================================================
 async function fetchEmailsFromToday(connection) {
   try {
@@ -87,11 +87,11 @@ async function fetchEmailsFromToday(connection) {
     await connection.openBox('INBOX', false);
     
     // Calcular rango de tiempo:
-    // - Inicio: 07:00 del día anterior
-    // - Fin: 07:00 del día actual
+    // - Inicio: 07:00 de hoy
+    // - Fin: ahora
     const now = new Date();
-    const rangeStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 7, 0, 0);
-    const rangeEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0);
+    const rangeStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0);
+    const rangeEnd = now;
     
     console.log(`🔍 Buscando correos desde ${rangeStart.toLocaleString('es-ES')} hasta ${rangeEnd.toLocaleString('es-ES')}`);
     
@@ -109,9 +109,11 @@ async function fetchEmailsFromToday(connection) {
     
     for (let msg of allMessages) {
       try {
-        const from = msg.headers.from ? msg.headers.from[0] : 'Desconocido';
-        const subject = msg.headers.subject ? msg.headers.subject[0] : '(sin asunto)';
-        const date = msg.headers.date ? new Date(msg.headers.date[0]) : new Date();
+        // Lectura segura de headers
+        const from = (msg.headers && msg.headers.from && msg.headers.from[0]) ? msg.headers.from[0] : 'Desconocido';
+        const subject = (msg.headers && msg.headers.subject && msg.headers.subject[0]) ? msg.headers.subject[0] : '(sin asunto)';
+        const dateStr = (msg.headers && msg.headers.date && msg.headers.date[0]) ? msg.headers.date[0] : new Date().toISOString();
+        const date = new Date(dateStr);
         
         // Filtrar por rango de tiempo en JavaScript
         if (date >= rangeStart && date <= rangeEnd) {
