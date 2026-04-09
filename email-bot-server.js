@@ -95,7 +95,7 @@ async function fetchEmailsFromToday(connection) {
     
     console.log(`🔍 Buscando correos desde ${rangeStart.toLocaleString('es-ES')} hasta ${rangeEnd.toLocaleString('es-ES')}`);
     
-    // Obtener últimos 50 correos (sin filtro de rango, lo haremos en JavaScript)
+    // Obtener últimos 100 correos (será más rápido y evita problemas con fechas)
     const searchCriteria = ['ALL'];
     const fetchOptions = {
       bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)',
@@ -105,15 +105,26 @@ async function fetchEmailsFromToday(connection) {
     const allMessages = await connection.search(searchCriteria, fetchOptions);
     console.log(`📧 Se encontraron ${allMessages.length} correos totales`);
     
+    // Tomar solo los últimos 100 (los más recientes)
+    const recentMessages = allMessages.slice(Math.max(0, allMessages.length - 100));
+    console.log(`🔍 Procesando últimos ${recentMessages.length} correos...`);
+    
     const emails = [];
     
-    for (let msg of allMessages) {
+    for (let msg of recentMessages) {
       try {
         // Lectura segura de headers
         const from = (msg.headers && msg.headers.from && msg.headers.from[0]) ? msg.headers.from[0] : 'Desconocido';
         const subject = (msg.headers && msg.headers.subject && msg.headers.subject[0]) ? msg.headers.subject[0] : '(sin asunto)';
         const dateStr = (msg.headers && msg.headers.date && msg.headers.date[0]) ? msg.headers.date[0] : new Date().toISOString();
-        const date = new Date(dateStr);
+        
+        // Parsear fecha - intentar múltiples formatos
+        let date = new Date(dateStr);
+        if (isNaN(date.getTime())) {
+          // Si falla, usar fecha actual
+          date = new Date();
+          console.log(`⚠️ No se pudo parsear fecha: ${dateStr}, usando fecha actual`);
+        }
         
         // Filtrar por rango de tiempo en JavaScript
         if (date >= rangeStart && date <= rangeEnd) {
@@ -403,3 +414,4 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (error) => {
   console.error('❌ Excepción no capturada:', error);
 });
+
