@@ -34,7 +34,7 @@ const CONFIG = {
   // Ionos IMAP
   ionos_email: 'nestor-garcia@clinicabandama.com',
   ionos_password: '$Noviemb-1979$',
-  ionos_imap_host: 'imap.ionos.com',
+  ionos_imap_host: 'imap.ionos.es',
   ionos_imap_port: 993,
   
   // Telegram
