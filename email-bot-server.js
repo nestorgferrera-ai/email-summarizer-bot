@@ -174,16 +174,21 @@ async function summarizeEmailsWithClaude(emails) {
   
   const prompt = `Eres un asistente ejecutivo que resume correos de manera concisa y práctica para un Director Financiero de una clínica privada.
 
-Aquí están los ${emails.length} correos recibidos en el último período (desde las 07:00 del día anterior hasta las 07:00 de hoy):
+IMPORTANTE: Solo resume correos de HOY (${new Date().toLocaleDateString('es-ES')}). Ignora correos de fechas anteriores.
+
+Aquí están los correos recibidos:
 
 ${emailsText}
 
 Por favor, crea un resumen ejecutivo en español que:
-1. Agrupe los correos por TEMA/PRIORIDAD (urgentes primero)
-2. Destaque asuntos críticos relacionados con: pacientes, facturación, seguros, recursos humanos
-3. Sea MUY CONCISO (máximo 800 caracteres)
-4. Usa emojis para mayor claridad
-5. Incluye recomendaciones de acciones inmediatas si las hay
+1. SOLO incluya correos de HOY
+2. Agrupe los correos por TEMA/PRIORIDAD (urgentes primero)
+3. Destaque asuntos críticos relacionados con: pacientes, facturación, seguros, recursos humanos
+4. Sea MUY CONCISO (máximo 800 caracteres)
+5. Usa emojis para mayor claridad
+6. Incluye recomendaciones de acciones inmediatas si las hay
+
+Si no hay correos de hoy, responde: "Sin correos nuevos hoy"
 
 Formato ejemplo:
 🚨 URGENTE
@@ -291,18 +296,21 @@ async function sendDailyEmailSummary() {
 }
 
 // ============================================================================
-// PROGRAMAR TAREA AUTOMÁTICA (07:00 diariamente)
+// PROGRAMAR TAREA AUTOMÁTICA (07:00 Canarias = 15:00 Oregon)
 // ============================================================================
 // Formato cron: minuto hora día mes día-semana
-// 0 7 * * * = cada día a las 07:00
-cron.schedule('0 7 * * *', () => {
-  console.log('⏰ Ejecutando tarea programada...');
+// Canarias es UTC+0 (invierno) o UTC+1 (verano)
+// Oregon es PST/PDT (UTC-7 o UTC-8)
+// 07:00 Canarias = 15:00 Oregon (diferencia de 8 horas)
+// 0 15 * * * = cada día a las 15:00 Oregon = 07:00 Canarias
+cron.schedule('0 15 * * *', () => {
+  console.log('⏰ Ejecutando tarea programada (07:00 Canarias)...');
   sendDailyEmailSummary();
 }, {
-  timezone: 'Europe/Madrid' // Zona horaria: España
+  timezone: 'America/Los_Angeles' // Zona horaria Oregon (donde está Render)
 });
 
-console.log('⏰ Tarea programada para ejecutarse a las 07:00 (horario España)');
+console.log('⏰ Tarea programada para ejecutarse a las 07:00 (horario Canarias) = 15:00 (horario Oregon)');
 
 // ============================================================================
 // RUTAS EXPRESS
