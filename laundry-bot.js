@@ -627,7 +627,7 @@ app.post('/trigger-test', async (req, res) => {
 // INICIAR SERVIDOR
 // ============================================================================
 app.listen(PORT, async () => {
-  console.log(`\n🧺 Bot de Lavandería — Clínica Bandama`);
+  console.log(`\n🧺 Bot de Lavandería — Clínica Bandama v2`);
   console.log(`🎯 Puerto: ${PORT}`);
   console.log(`📋 Albaranes recepción → ${CONFIG.albaran_sheet_id} / "${CONFIG.albaran_sheet_tab}"`);
   console.log(`📋 Envíos diarios      → ${CONFIG.daily_sheet_id} / "${CONFIG.daily_sheet_tab}"`);
