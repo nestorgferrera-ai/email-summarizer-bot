@@ -1,18 +1,20 @@
 {
   "name": "email-summarizer-bot",
-  "version": "1.0.0",
-  "description": "Resume correos Ionos diariamente y envía por Telegram usando Claude",
-  "main": "email-bot-server.js",
+  "version": "1.1.0",
+  "description": "Bot de albaranes de lavandería + resumen de correos Ionos por Telegram",
+  "main": "laundry-bot.js",
   "scripts": {
-    "start": "node email-bot-server.js",
-    "dev": "nodemon email-bot-server.js"
+    "start": "node laundry-bot.js",
+    "start:email": "node email-bot-server.js",
+    "dev": "nodemon laundry-bot.js",
+    "dev:email": "nodemon email-bot-server.js"
   },
   "keywords": [
-    "email",
-    "summarizer",
     "telegram",
-    "claude",
-    "ionos"
+    "lavanderia",
+    "albaran",
+    "google-sheets",
+    "clinica"
   ],
   "author": "Nestor Garcia",
   "license": "MIT",
@@ -22,7 +24,8 @@
     "imap-simple": "^5.1.0",
     "mailparser": "^3.6.5",
     "axios": "^1.6.1",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "googleapis": "^144.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
