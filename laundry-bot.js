@@ -408,7 +408,18 @@ async function handleMessage(chatId, text, fromName) {
 
   // ---- INICIAR FLUJOS ----
   if (t === '/nuevo') {
-    await startFlow(chatId, 'albaran');
+    await sendMessage(chatId,
+      `ℹ️ */nuevo* es para registrar la *recepción* de ropa de Selava.\n\n` +
+      `Para registrar un *envío a Selava* usa */diario*.\n\n¿Qué quieres hacer?`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📦 Registrar recepción de Selava (/nuevo)', callback_data: 'start_albaran' }],
+            [{ text: '🚚 Registrar envío a Selava (/diario)',     callback_data: 'start_diario'  }],
+          ],
+        },
+      }
+    );
     return;
   }
 
@@ -494,6 +505,16 @@ async function handleCallbackQuery(chatId, callbackData, fromName, queryId) {
     { callback_query_id: queryId },
     { timeout: 5000 }
   ).catch(() => {});
+
+  // ---- INICIAR FLUJO DESDE BOTÓN ----
+  if (callbackData === 'start_albaran') {
+    await startFlow(chatId, 'albaran');
+    return;
+  }
+  if (callbackData === 'start_diario') {
+    await startFlow(chatId, 'diario');
+    return;
+  }
 
   // ---- RESUMEN POR PERÍODO ----
   if (callbackData === 'resumen_martes_jueves' || callbackData === 'resumen_viernes_lunes') {
