@@ -137,6 +137,11 @@ async function appendToSheet(responsable, data) {
     const sheets = google.sheets({ version: 'v4', auth });
 
     const now = new Date();
+    // Formato igual al que genera Google Forms: "19/03/2026 11:00:00"
+    const marcaTemporal = now.toLocaleString('es-ES', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
     const dateStr = now.toLocaleDateString('es-ES', {
       day: '2-digit', month: '2-digit', year: 'numeric',
     });
@@ -144,7 +149,12 @@ async function appendToSheet(responsable, data) {
       hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
 
+    // Columnas idénticas a las del formulario Google:
+    // Marca temporal | Fecha | Hora | Sábanas | Mantas | Colchas |
+    // Fundas Almohadas | Almohadas | Toallas | Toallas pequeñas | Alfombrillas |
+    // Dirección de correo | Responsable
     const row = [
+      marcaTemporal,
       dateStr,
       timeStr,
       data.sabanas          || 0,
@@ -155,13 +165,13 @@ async function appendToSheet(responsable, data) {
       data.toallas          || 0,
       data.toallas_pequenas || 0,
       data.alfombrillas     || 0,
-      responsable,
       'Telegram Bot',
+      responsable,
     ];
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: CONFIG.google_sheet_id,
-      range: 'Albarán!A:L',
+      range: 'Respuestas de formulario 1!A:M',
       valueInputOption: 'USER_ENTERED',
       resource: { values: [row] },
     });
