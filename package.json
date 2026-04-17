@@ -2,12 +2,10 @@
   "name": "email-summarizer-bot",
   "version": "1.1.0",
   "description": "Bot de albaranes de lavandería + resumen de correos Ionos por Telegram",
-  "main": "laundry-bot.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node laundry-bot.js",
-    "start:email": "node email-bot-server.js",
-    "dev": "nodemon laundry-bot.js",
-    "dev:email": "nodemon email-bot-server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js"
   },
   "keywords": [
     "telegram",
