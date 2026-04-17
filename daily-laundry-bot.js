@@ -1,7 +1,8 @@
 // ============================================================================
 // TELEGRAM DAILY LAUNDRY BOT - Bot de envío diario de lavandería
 // Registra ropa enviada a Selava cada día y guarda en Google Sheets
-// Incluye /resumen para ver totales acumulados por artículo
+// /resumen → elige período (Mar-Jue o Vie-Lun), suma totales y
+//            escribe el albarán en la hoja "Albaran Entrega Selava"
 // Clínica Bandama
 // ============================================================================
 
@@ -36,12 +37,17 @@ function loadGoogleCredentials() {
 
 const CONFIG = {
   telegram_token: process.env.DAILY_TELEGRAM_TOKEN,
+  // Sheet de ENVÍOS DIARIOS (fuente de datos)
   google_sheet_id: process.env.DAILY_SHEET_ID,
+  // Sheet donde se escribe el albarán final (puede ser el mismo o diferente)
+  albaran_sheet_id: process.env.ALBARAN_SHEET_ID || process.env.DAILY_SHEET_ID,
   google_credentials_json: loadGoogleCredentials(),
   app_url: process.env.DAILY_APP_URL || process.env.APP_URL || '',
   allowed_chat_ids: (process.env.ALLOWED_CHAT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
-  // Nombre de la pestaña en el Google Sheet del envío diario
+  // Pestaña del sheet de envíos diarios
   sheet_tab: process.env.DAILY_SHEET_TAB || 'Envío Diario',
+  // Pestaña del sheet de albarán final
+  albaran_tab: process.env.ALBARAN_SHEET_TAB || 'Albaran Entrega Selava',
 };
 
 // ============================================================================
@@ -58,8 +64,56 @@ const ITEMS = [
   { key: 'alfombrillas',     label: 'Alfombrillas' },
 ];
 
-// Columnas del sheet: A=MarcaTemporal, B=Fecha, C=Hora, D..K=artículos, L=Origen, M=Responsable
+// Columnas del sheet: A=MarcaTemporal, B=Fecha(DD/MM/YYYY), C=Hora, D..K=artículos, L=Origen, M=Responsable
 const ITEM_COL_START = 3; // índice 0-based de la primera columna de artículo (columna D)
+
+// ============================================================================
+// UTILIDADES DE FECHAS
+// ============================================================================
+
+// Devuelve el Date del día de semana más reciente (≤ hoy)
+// dayTarget: 0=Dom,1=Lun,2=Mar,3=Mié,4=Jue,5=Vie,6=Sáb
+function mostRecentWeekday(dayTarget) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = (today.getDay() - dayTarget + 7) % 7;
+  const result = new Date(today);
+  result.setDate(today.getDate() - diff);
+  return result;
+}
+
+// Devuelve { startDate, endDate, label } para cada período
+function getPeriodDates(period) {
+  if (period === 'martes_jueves') {
+    const start = mostRecentWeekday(2); // Martes
+    const end = new Date(start);
+    end.setDate(start.getDate() + 2);  // Jueves
+    return { startDate: start, endDate: end, label: 'Martes – Jueves' };
+  }
+  if (period === 'viernes_lunes') {
+    const start = mostRecentWeekday(5); // Viernes
+    const end = new Date(start);
+    end.setDate(start.getDate() + 3);  // Lunes
+    return { startDate: start, endDate: end, label: 'Viernes – Lunes' };
+  }
+  return null;
+}
+
+function formatDate(date) {
+  return date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+// Parsea "DD/MM/YYYY" del sheet a Date
+function parseSheetDate(str) {
+  if (!str) return null;
+  const parts = str.split('/');
+  if (parts.length !== 3) return null;
+  const [d, m, y] = parts.map(Number);
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return null;
+  const date = new Date(y, m - 1, d);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
 
 // ============================================================================
 // ESTADO DE SESIONES (en memoria)
@@ -123,7 +177,7 @@ async function registerWebhook() {
 }
 
 // ============================================================================
-// GOOGLE SHEETS: GUARDAR FILA DE ENVÍO
+// GOOGLE SHEETS: GUARDAR FILA DE ENVÍO DIARIO
 // ============================================================================
 async function appendToSheet(responsable, data) {
   if (!CONFIG.google_sheet_id || !CONFIG.google_credentials_json) {
@@ -137,7 +191,6 @@ async function appendToSheet(responsable, data) {
       credentials,
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
-
     const sheets = google.sheets({ version: 'v4', auth });
 
     const now = new Date();
@@ -145,30 +198,16 @@ async function appendToSheet(responsable, data) {
       day: '2-digit', month: '2-digit', year: 'numeric',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
-    const dateStr = now.toLocaleDateString('es-ES', {
-      day: '2-digit', month: '2-digit', year: 'numeric',
-    });
-    const timeStr = now.toLocaleTimeString('es-ES', {
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    });
+    const dateStr = now.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-    // Columnas: MarcaTemporal | Fecha | Hora | Sábanas | Mantas | Colchas |
-    // Fundas Almohadas | Almohadas | Toallas | Toallas pequeñas | Alfombrillas |
-    // Origen | Responsable
+    // A=MarcaTemporal | B=Fecha | C=Hora | D-K=artículos | L=Origen | M=Responsable
     const row = [
-      marcaTemporal,
-      dateStr,
-      timeStr,
-      data.sabanas          || 0,
-      data.mantas           || 0,
-      data.colchas          || 0,
-      data.fundas_almohadas || 0,
-      data.almohadas        || 0,
-      data.toallas          || 0,
-      data.toallas_pequenas || 0,
-      data.alfombrillas     || 0,
-      'Telegram Bot',
-      responsable,
+      marcaTemporal, dateStr, timeStr,
+      data.sabanas || 0, data.mantas || 0, data.colchas || 0,
+      data.fundas_almohadas || 0, data.almohadas || 0,
+      data.toallas || 0, data.toallas_pequenas || 0, data.alfombrillas || 0,
+      'Telegram Bot', responsable,
     ];
 
     await sheets.spreadsheets.values.append({
@@ -187,12 +226,10 @@ async function appendToSheet(responsable, data) {
 }
 
 // ============================================================================
-// GOOGLE SHEETS: LEER TOTALES PARA /resumen
+// GOOGLE SHEETS: LEER Y SUMAR TOTALES POR PERÍODO
 // ============================================================================
-async function getSheetTotals() {
-  if (!CONFIG.google_sheet_id || !CONFIG.google_credentials_json) {
-    return null;
-  }
+async function getTotalsForPeriod(startDate, endDate) {
+  if (!CONFIG.google_sheet_id || !CONFIG.google_credentials_json) return null;
 
   try {
     const credentials = JSON.parse(CONFIG.google_credentials_json);
@@ -200,7 +237,6 @@ async function getSheetTotals() {
       credentials,
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     });
-
     const sheets = google.sheets({ version: 'v4', auth });
 
     const response = await sheets.spreadsheets.values.get({
@@ -209,19 +245,19 @@ async function getSheetTotals() {
     });
 
     const rows = response.data.values || [];
-    if (rows.length <= 1) {
-      // Solo cabecera o vacío
-      return { totals: Object.fromEntries(ITEMS.map(i => [i.key, 0])), rowCount: 0 };
-    }
-
-    // Sumar columnas D-K (índices 3-10) para cada artículo
     const totals = Object.fromEntries(ITEMS.map(i => [i.key, 0]));
     let rowCount = 0;
 
+    // Empezar desde fila 1 (saltando cabecera en índice 0)
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      // Saltar filas de cabecera secundarias o vacías
-      if (!row || !row[0] || isNaN(parseInt(row[ITEM_COL_START], 10))) continue;
+      if (!row || !row[1]) continue;
+
+      const rowDate = parseSheetDate(row[1]); // columna B = Fecha
+      if (!rowDate) continue;
+
+      // Filtrar por rango de fechas del período
+      if (rowDate < startDate || rowDate > endDate) continue;
 
       rowCount++;
       ITEMS.forEach((item, idx) => {
@@ -238,14 +274,67 @@ async function getSheetTotals() {
 }
 
 // ============================================================================
+// GOOGLE SHEETS: ESCRIBIR ALBARÁN EN "Albaran Entrega Selava"
+// ============================================================================
+async function writeAlbaranToSheet(periodLabel, startDate, endDate, totals, rowCount) {
+  if (!CONFIG.albaran_sheet_id || !CONFIG.google_credentials_json) return false;
+
+  try {
+    const credentials = JSON.parse(CONFIG.google_credentials_json);
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+
+    const now = new Date();
+    const generadoEl = now.toLocaleString('es-ES', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
+
+    // Columnas: Generado el | Período | Fecha inicio | Fecha fin | Registros |
+    //           Sábanas | Mantas | Colchas | Fundas Almohadas | Almohadas |
+    //           Toallas | Toallas pequeñas | Alfombrillas | TOTAL
+    const row = [
+      generadoEl,
+      periodLabel,
+      formatDate(startDate),
+      formatDate(endDate),
+      rowCount,
+      totals.sabanas          || 0,
+      totals.mantas           || 0,
+      totals.colchas          || 0,
+      totals.fundas_almohadas || 0,
+      totals.almohadas        || 0,
+      totals.toallas          || 0,
+      totals.toallas_pequenas || 0,
+      totals.alfombrillas     || 0,
+      grandTotal,
+    ];
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: CONFIG.albaran_sheet_id,
+      range: `${CONFIG.albaran_tab}!A:N`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [row] },
+    });
+
+    console.log(`✅ Albarán escrito en "${CONFIG.albaran_tab}" — ${periodLabel} ${formatDate(startDate)} → ${formatDate(endDate)}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Error escribiendo albarán en Google Sheets:', err.message);
+    return false;
+  }
+}
+
+// ============================================================================
 // LÓGICA DE CONVERSACIÓN
 // ============================================================================
 
 function buildSummaryText(responsable, data) {
-  const lines = ITEMS.map(item => {
-    const qty = data[item.key] || 0;
-    return `  • ${item.label}: *${qty}*`;
-  });
+  const lines = ITEMS.map(item => `  • ${item.label}: *${data[item.key] || 0}*`);
   return `📋 *Resumen del envío diario*\n\n👤 Responsable: *${responsable}*\n\n${lines.join('\n')}\n\n¿Confirmas el envío?`;
 }
 
@@ -262,10 +351,10 @@ async function handleMessage(chatId, text, fromName) {
   if (textTrim === '/start' || textTrim === '/inicio') {
     resetSession(chatId);
     await sendMessage(chatId,
-      `🚚 *Bot de Envío Diario de Lavandería*\n\nHola ${fromName}! Aquí puedes registrar la ropa enviada a Selava cada día.\n\n` +
+      `🚚 *Bot de Envío Diario de Lavandería*\n\nHola ${fromName}! Aquí puedes registrar la ropa enviada a Selava.\n\n` +
       `*Comandos disponibles:*\n` +
       `/nuevo — Registrar nuevo envío\n` +
-      `/resumen — Ver totales acumulados por artículo\n` +
+      `/resumen — Generar albarán por período\n` +
       `/cancelar — Cancelar registro en curso\n` +
       `/ayuda — Ver esta ayuda`
     );
@@ -276,10 +365,12 @@ async function handleMessage(chatId, text, fromName) {
     await sendMessage(chatId,
       `📖 *Ayuda — Bot de Envío Diario*\n\n` +
       `/nuevo — Registrar envío de ropa a Selava\n` +
-      `/resumen — Ver totales acumulados de todos los envíos\n` +
+      `/resumen — Ver totales por período y generar albarán en Google Sheets\n` +
       `/cancelar — Cancelar el registro en curso\n` +
       `/ayuda — Ver esta ayuda\n\n` +
-      `El bot te irá preguntando la cantidad de cada artículo.\nEscribe *0* si no hay ninguno de ese tipo.`
+      `Los períodos disponibles son:\n` +
+      `  📅 *Martes – Jueves*\n` +
+      `  📅 *Viernes – Lunes*`
     );
     return;
   }
@@ -290,29 +381,27 @@ async function handleMessage(chatId, text, fromName) {
     return;
   }
 
-  // ---- COMANDO /resumen: LEER TOTALES DEL SHEET ----
+  // ---- COMANDO /resumen: ELEGIR PERÍODO ----
   if (textTrim === '/resumen') {
-    await sendMessage(chatId, '⏳ Calculando totales...');
-    const result = await getSheetTotals();
-
-    if (!result) {
-      await sendMessage(chatId, '❌ No se pudo conectar con Google Sheets. Contacta con el administrador.');
-      return;
-    }
-
-    const { totals, rowCount } = result;
-    const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
-
-    const lines = ITEMS.map(item => {
-      const qty = totals[item.key] || 0;
-      return `  • ${item.label}: *${qty}*`;
-    });
+    const { startDate: startMJ, endDate: endMJ } = getPeriodDates('martes_jueves');
+    const { startDate: startVM, endDate: endVM } = getPeriodDates('viernes_lunes');
 
     await sendMessage(chatId,
-      `📊 *Resumen acumulado — Envíos a Selava*\n\n` +
-      `${lines.join('\n')}\n\n` +
-      `📦 *Total piezas: ${grandTotal}*\n` +
-      `📋 Registros: ${rowCount} envío${rowCount !== 1 ? 's' : ''}`
+      `📊 *Generar albarán de envío a Selava*\n\nElige el período a totalizar:\n\n` +
+      `📅 *Martes – Jueves:* ${formatDate(startMJ)} → ${formatDate(endMJ)}\n` +
+      `📅 *Viernes – Lunes:* ${formatDate(startVM)} → ${formatDate(endVM)}`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: `📅 Martes – Jueves`, callback_data: 'resumen_martes_jueves' },
+            ],
+            [
+              { text: `📅 Viernes – Lunes`, callback_data: 'resumen_viernes_lunes' },
+            ],
+          ],
+        },
+      }
     );
     return;
   }
@@ -337,7 +426,7 @@ async function handleMessage(chatId, text, fromName) {
     session.state = STATE.ASKING_ITEM;
     session.step = 0;
     await sendMessage(chatId,
-      `✅ Hola *${textTrim}*!\n\nVamos a registrar el envío. Te preguntaré la cantidad de cada artículo.\nEscribe *0* si no hay ninguno.\n\n` +
+      `✅ Hola *${textTrim}*!\n\nVamos a registrar el envío. Escribe *0* si no hay ninguno.\n\n` +
       `*${ITEMS[0].label}* — ¿Cuántas unidades?`
     );
     return;
@@ -358,15 +447,12 @@ async function handleMessage(chatId, text, fromName) {
       await sendMessage(chatId, `*${ITEMS[session.step].label}* — ¿Cuántas unidades?`);
     } else {
       session.state = STATE.CONFIRMING;
-      const summary = buildSummaryText(session.responsable, session.data);
-      await sendMessage(chatId, summary, {
+      await sendMessage(chatId, buildSummaryText(session.responsable, session.data), {
         reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '✅ Confirmar envío', callback_data: 'confirm' },
-              { text: '❌ Cancelar', callback_data: 'cancel' },
-            ],
-          ],
+          inline_keyboard: [[
+            { text: '✅ Confirmar envío', callback_data: 'confirm' },
+            { text: '❌ Cancelar', callback_data: 'cancel' },
+          ]],
         },
       });
     }
@@ -381,7 +467,7 @@ async function handleMessage(chatId, text, fromName) {
 
   // ---- SIN ESTADO ACTIVO ----
   await sendMessage(chatId,
-    'Escribe /nuevo para registrar un envío diario.\nO /ayuda para ver los comandos disponibles.'
+    'Escribe /nuevo para registrar un envío.\nEscribe /resumen para generar el albarán por período.'
   );
 }
 
@@ -392,6 +478,54 @@ async function handleCallbackQuery(chatId, callbackData, fromName, queryId) {
     { timeout: 5000 }
   ).catch(() => {});
 
+  // ---- RESUMEN POR PERÍODO ----
+  if (callbackData === 'resumen_martes_jueves' || callbackData === 'resumen_viernes_lunes') {
+    const periodKey = callbackData === 'resumen_martes_jueves' ? 'martes_jueves' : 'viernes_lunes';
+    const { startDate, endDate, label } = getPeriodDates(periodKey);
+
+    await sendMessage(chatId, `⏳ Calculando totales para *${label}* (${formatDate(startDate)} → ${formatDate(endDate)})...`);
+
+    const result = await getTotalsForPeriod(startDate, endDate);
+    if (!result) {
+      await sendMessage(chatId, '❌ No se pudo conectar con Google Sheets. Contacta con el administrador.');
+      return;
+    }
+
+    const { totals, rowCount } = result;
+    const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
+
+    if (rowCount === 0) {
+      await sendMessage(chatId,
+        `ℹ️ No hay registros de envíos para el período *${label}*\n` +
+        `(${formatDate(startDate)} → ${formatDate(endDate)})\n\n` +
+        `Usa /nuevo para registrar envíos primero.`
+      );
+      return;
+    }
+
+    const lines = ITEMS.map(item => `  • ${item.label}: *${totals[item.key] || 0}*`);
+
+    // Escribir albarán en Google Sheets
+    await sendMessage(chatId, `⏳ Guardando albarán en Google Sheets...`);
+    const saved = await writeAlbaranToSheet(label, startDate, endDate, totals, rowCount);
+
+    const sheetsMsg = saved
+      ? `\n✅ _Albarán guardado en la hoja "${CONFIG.albaran_tab}"._`
+      : `\n⚠️ _No se pudo guardar en Google Sheets. Contacta con el administrador._`;
+
+    await sendMessage(chatId,
+      `📊 *Albarán de Envío a Selava*\n\n` +
+      `📅 Período: *${label}*\n` +
+      `🗓 ${formatDate(startDate)} → ${formatDate(endDate)}\n` +
+      `📋 Registros: ${rowCount} envío${rowCount !== 1 ? 's' : ''}\n\n` +
+      `${lines.join('\n')}\n\n` +
+      `📦 *TOTAL PIEZAS: ${grandTotal}*` +
+      sheetsMsg
+    );
+    return;
+  }
+
+  // ---- CONFIRMAR / CANCELAR ENVÍO DIARIO ----
   const session = getSession(chatId);
 
   if (session.state !== STATE.CONFIRMING) {
@@ -413,7 +547,7 @@ async function handleCallbackQuery(chatId, callbackData, fromName, queryId) {
     resetSession(chatId);
 
     const now = new Date();
-    const dateStr = now.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const dateStr = formatDate(now);
     const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
     const total = ITEMS.reduce((sum, item) => sum + (data[item.key] || 0), 0);
 
@@ -424,7 +558,7 @@ async function handleCallbackQuery(chatId, callbackData, fromName, queryId) {
         `👤 Responsable: ${responsable}\n` +
         `📦 Total artículos: *${total} unidades*\n\n` +
         `_Los datos se han guardado en Google Sheets._\n\n` +
-        `Usa /resumen para ver los totales acumulados.\n` +
+        `Usa /resumen para generar el albarán por período.\n` +
         `Usa /nuevo para registrar otro envío.`
       );
     } else {
@@ -454,32 +588,24 @@ app.get('/', (req, res) => {
 
 app.post('/daily-webhook', async (req, res) => {
   res.sendStatus(200);
-
   const update = req.body;
 
   if (update.message) {
     const msg = update.message;
-    const chatId = msg.chat.id;
-    const text = msg.text || '';
-    const fromName = msg.from?.first_name || msg.from?.username || 'Usuario';
-    await handleMessage(chatId, text, fromName);
+    await handleMessage(msg.chat.id, msg.text || '', msg.from?.first_name || msg.from?.username || 'Usuario');
   }
 
   if (update.callback_query) {
     const cb = update.callback_query;
-    const chatId = cb.message.chat.id;
-    const fromName = cb.from?.first_name || cb.from?.username || 'Usuario';
-    await handleCallbackQuery(chatId, cb.data, fromName, cb.id);
+    await handleCallbackQuery(cb.message.chat.id, cb.data, cb.from?.first_name || cb.from?.username || 'Usuario', cb.id);
   }
 });
 
 app.post('/trigger-test', async (req, res) => {
   const testChatId = req.body?.chat_id;
-  if (!testChatId) {
-    return res.status(400).json({ error: 'Proporciona chat_id en el body' });
-  }
+  if (!testChatId) return res.status(400).json({ error: 'Proporciona chat_id en el body' });
   await sendMessage(testChatId,
-    '✅ *Bot de Envío Diario activo*\n\nUsa /nuevo para registrar un envío diario a Selava.\nUsa /resumen para ver los totales acumulados.'
+    '✅ *Bot de Envío Diario activo*\n\nUsa /nuevo para registrar un envío.\nUsa /resumen para generar el albarán por período.'
   );
   res.json({ status: 'ok', message: 'Mensaje de prueba enviado' });
 });
@@ -490,11 +616,8 @@ app.post('/trigger-test', async (req, res) => {
 app.listen(PORT, async () => {
   console.log(`\n🚚 Bot de Envío Diario de Lavandería`);
   console.log(`🎯 Servidor en puerto ${PORT}`);
-  console.log(`\n📋 Endpoints:`);
-  console.log(`   GET  /              — Estado`);
-  console.log(`   POST /daily-webhook — Webhook de Telegram`);
-  console.log(`   POST /trigger-test  — Test (requiere chat_id en body)\n`);
-
+  console.log(`📋 Envíos diarios → Sheet: ${CONFIG.google_sheet_id} / Pestaña: "${CONFIG.sheet_tab}"`);
+  console.log(`📋 Albarán final  → Sheet: ${CONFIG.albaran_sheet_id} / Pestaña: "${CONFIG.albaran_tab}"\n`);
   await registerWebhook();
 });
 
