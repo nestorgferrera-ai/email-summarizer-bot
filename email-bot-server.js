@@ -44,6 +44,8 @@ const CONFIG = {
   claude_api_key: process.env.CLAUDE_API_KEY,
   claude_model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
 
+  app_url: process.env.APP_URL || '',
+
   summary_hour: parseInt(process.env.SUMMARY_HOUR || '7'),
   range_hour: parseInt(process.env.RANGE_HOUR || '7'),
 };
@@ -91,40 +93,48 @@ async function connectToIonos() {
 }
 
 // ============================================================================
-// OBTENER CORREOS DE LAS ÚLTIMAS 24 HORAS
+// OBTENER CORREOS (configurable por número de días o últimos N)
 // ============================================================================
-async function fetchEmailsFromToday(connection) {
+async function fetchEmails(connection, { days = null, last = 50 } = {}) {
   try {
     await connection.openBox('INBOX', false);
 
-    // Buscar desde ayer (IMAP SINCE solo acepta fecha, filtro de hora se hace en memoria)
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const sinceDate = `${yesterday.getDate()}-${months[yesterday.getMonth()]}-${yesterday.getFullYear()}`;
+    let searchCriteria = ['ALL'];
+    let cutoff = null;
 
-    console.log(`🔍 Buscando correos desde ${sinceDate}...`);
+    if (days) {
+      cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const sinceDate = `${cutoff.getDate()}-${months[cutoff.getMonth()]}-${cutoff.getFullYear()}`;
+      searchCriteria = [['SINCE', sinceDate]];
+      console.log(`🔍 Buscando correos de los últimos ${days} días (desde ${sinceDate})...`);
+    } else {
+      console.log(`🔍 Buscando últimos ${last} correos...`);
+    }
 
-    const searchCriteria = [['SINCE', sinceDate]];
     const fetchOptions = {
       bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)',
       struct: true
     };
 
     const allMessages = await connection.search(searchCriteria, fetchOptions);
-    console.log(`📧 Se encontraron ${allMessages.length} correos desde ayer`);
+    console.log(`📧 Se encontraron ${allMessages.length} correos`);
+
+    // Sin filtro de fecha: tomar los últimos N
+    const messages = days
+      ? allMessages
+      : allMessages.slice(Math.max(0, allMessages.length - last));
 
     const emails = [];
 
-    for (let msg of allMessages) {
+    for (let msg of messages) {
       try {
-        const from = (msg.headers && msg.headers.from && msg.headers.from[0]) ? msg.headers.from[0] : 'Desconocido';
-        const subject = (msg.headers && msg.headers.subject && msg.headers.subject[0]) ? msg.headers.subject[0] : '(sin asunto)';
-        const dateStr = (msg.headers && msg.headers.date && msg.headers.date[0]) ? msg.headers.date[0] : new Date().toISOString();
+        const from = (msg.headers?.from?.[0]) || 'Desconocido';
+        const subject = (msg.headers?.subject?.[0]) || '(sin asunto)';
+        const dateStr = (msg.headers?.date?.[0]) || new Date().toISOString();
 
         let date = new Date(dateStr);
-        if (isNaN(date.getTime())) {
-          date = new Date();
-        }
+        if (isNaN(date.getTime())) date = new Date();
 
         let preview = '';
         try {
@@ -140,24 +150,16 @@ async function fetchEmailsFromToday(connection) {
           preview = '(no se pudo obtener preview)';
         }
 
-        emails.push({
-          from,
-          subject,
-          preview: preview || '(sin contenido)',
-          date,
-          uid: msg.attributes.uid
-        });
+        emails.push({ from, subject, preview: preview || '(sin contenido)', date, uid: msg.attributes.uid });
       } catch (err) {
         console.log(`⚠️ Error procesando correo: ${err.message}`);
       }
     }
 
-    // Filtrar correos estrictamente dentro de las últimas 24 horas
-    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const filteredEmails = emails.filter(e => e.date >= cutoff);
-
-    console.log(`✅ ${filteredEmails.length} correos en las últimas 24 horas`);
-    return filteredEmails.sort((a, b) => b.date - a.date);
+    // Filtrar por cutoff si aplica
+    const filtered = cutoff ? emails.filter(e => e.date >= cutoff) : emails;
+    console.log(`✅ ${filtered.length} correos procesados`);
+    return filtered.sort((a, b) => b.date - a.date);
 
   } catch (error) {
     console.error('❌ Error obteniendo correos:', error.message);
@@ -168,30 +170,35 @@ async function fetchEmailsFromToday(connection) {
 // ============================================================================
 // RESUMIR CORREOS CON CLAUDE
 // ============================================================================
-async function summarizeEmailsWithClaude(emails) {
+async function summarizeEmailsWithClaude(emails, tipo = 'diario') {
   if (!CONFIG.claude_api_key) {
     throw new Error('CLAUDE_API_KEY no está configurada');
   }
 
   if (emails.length === 0) {
-    return `📧 Sin correos nuevos desde las ${String(CONFIG.range_hour).padStart(2, '0')}:00 de hoy.`;
+    return `📧 Sin correos nuevos ${tipo === 'semanal' ? 'esta semana' : 'en las últimas 24 horas'}.`;
   }
 
   const emailsText = emails.map((email, index) => {
     const timeStr = email.date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    return `${index + 1}. [${timeStr}] De: ${email.from}\n   Asunto: ${email.subject}\n   Preview: ${email.preview}`;
+    const dateStr = email.date.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+    return `${index + 1}. [${dateStr} ${timeStr}] De: ${email.from}\n   Asunto: ${email.subject}\n   Preview: ${email.preview}`;
   }).join('\n\n');
+
+  const instrucciones = tipo === 'semanal'
+    ? 'Resume los correos de TODA LA SEMANA. Identifica tendencias, temas recurrentes y pendientes importantes.'
+    : 'Resume los correos recientes del día de hoy. Destaca lo más urgente.';
 
   const prompt = `Eres un asistente ejecutivo que resume correos de manera concisa y práctica para un Director Financiero de una clínica privada.
 
-Resume TODOS los correos mostrados a continuación (son los correos recientes recibidos):
+${instrucciones}
 
 ${emailsText}
 
 Por favor, crea un resumen ejecutivo en español que:
 1. Agrupe los correos por TEMA/PRIORIDAD (urgentes primero)
 2. Destaque asuntos críticos relacionados con: pacientes, facturación, seguros, recursos humanos
-3. Sea MUY CONCISO (máximo 800 caracteres)
+3. Sea MUY CONCISO (máximo ${tipo === 'semanal' ? '1200' : '800'} caracteres)
 4. Usa emojis para mayor claridad
 5. Incluye recomendaciones de acciones inmediatas si las hay
 
@@ -220,7 +227,7 @@ Formato ejemplo:
     });
 
     const summary = response.data.content[0].text;
-    console.log('✅ Resumen generado por Claude');
+    console.log(`✅ Resumen ${tipo} generado por Claude`);
     return summary;
   });
 }
@@ -228,7 +235,7 @@ Formato ejemplo:
 // ============================================================================
 // ENVIAR POR TELEGRAM
 // ============================================================================
-async function sendTelegramMessage(message) {
+async function sendTelegramMessage(message, chatId = null) {
   const url = `https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`;
 
   const now = new Date();
@@ -243,7 +250,7 @@ async function sendTelegramMessage(message) {
 
   return withRetry(async () => {
     const response = await axios.post(url, {
-      chat_id: CONFIG.telegram_chat_id,
+      chat_id: chatId || CONFIG.telegram_chat_id,
       text: fullMessage,
       parse_mode: 'Markdown'
     }, { timeout: 15000 });
@@ -254,9 +261,9 @@ async function sendTelegramMessage(message) {
 }
 
 // ============================================================================
-// FUNCIÓN PRINCIPAL
+// FUNCIÓN PRINCIPAL: RESUMEN DIARIO
 // ============================================================================
-async function sendDailyEmailSummary() {
+async function sendDailyEmailSummary(chatId = null) {
   console.log('\n' + '='.repeat(60));
   console.log('🚀 Iniciando resumen diario de correos...');
   console.log('='.repeat(60));
@@ -264,40 +271,105 @@ async function sendDailyEmailSummary() {
   let connection;
   try {
     connection = await withRetry(() => connectToIonos());
-    const emails = await fetchEmailsFromToday(connection);
-    const summary = await summarizeEmailsWithClaude(emails);
-    await sendTelegramMessage(summary);
-
-    console.log('✅ Proceso completado exitosamente\n');
-
+    const emails = await fetchEmails(connection, { last: 50 });
+    const summary = await summarizeEmailsWithClaude(emails, 'diario');
+    await sendTelegramMessage(summary, chatId);
+    console.log('✅ Resumen diario completado\n');
   } catch (error) {
-    console.error('❌ Error en el proceso:', error.message);
+    console.error('❌ Error en resumen diario:', error.message);
     try {
-      await sendTelegramMessage(`❌ Error al generar resumen:\n\`\`\`\n${error.message}\n\`\`\``);
-    } catch (telegramError) {
-      console.error('❌ No se pudo enviar el error por Telegram:', telegramError.message);
+      await sendTelegramMessage(`❌ Error al generar resumen:\n\`\`\`\n${error.message}\n\`\`\``, chatId);
+    } catch (e) {
+      console.error('❌ No se pudo enviar el error por Telegram:', e.message);
     }
   } finally {
     if (connection) {
-      try {
-        await connection.end();
-        console.log('Conexión IMAP cerrada');
-      } catch (e) {
-        // ignorar errores al cerrar
-      }
+      try { await connection.end(); } catch (e) {}
+      console.log('Conexión IMAP cerrada');
     }
   }
 }
 
 // ============================================================================
-// PROGRAMAR TAREA AUTOMÁTICA (07:00 Canarias = 15:00 UTC en verano)
+// FUNCIÓN PRINCIPAL: RESUMEN SEMANAL (lunes)
 // ============================================================================
+async function sendWeeklyEmailSummary() {
+  console.log('\n' + '='.repeat(60));
+  console.log('📅 Iniciando resumen SEMANAL de correos...');
+  console.log('='.repeat(60));
+
+  let connection;
+  try {
+    connection = await withRetry(() => connectToIonos());
+    const emails = await fetchEmails(connection, { days: 7 });
+    const summary = await summarizeEmailsWithClaude(emails, 'semanal');
+
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const weeklyMessage = `📅 *RESUMEN SEMANAL - ${dateStr}*\n\n${summary}`;
+
+    await withRetry(async () => {
+      await axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
+        chat_id: CONFIG.telegram_chat_id,
+        text: weeklyMessage,
+        parse_mode: 'Markdown'
+      }, { timeout: 15000 });
+    });
+
+    console.log('✅ Resumen semanal completado\n');
+  } catch (error) {
+    console.error('❌ Error en resumen semanal:', error.message);
+    try {
+      await sendTelegramMessage(`❌ Error en resumen semanal:\n\`\`\`\n${error.message}\n\`\`\``);
+    } catch (e) {
+      console.error('❌ No se pudo enviar el error por Telegram:', e.message);
+    }
+  } finally {
+    if (connection) {
+      try { await connection.end(); } catch (e) {}
+      console.log('Conexión IMAP cerrada');
+    }
+  }
+}
+
+// ============================================================================
+// TELEGRAM WEBHOOK: registrar URL al arrancar
+// ============================================================================
+async function registerTelegramWebhook() {
+  if (!CONFIG.app_url) {
+    console.log('⚠️ APP_URL no configurada, webhook de Telegram no registrado');
+    return;
+  }
+  const webhookUrl = `${CONFIG.app_url}/telegram-webhook`;
+  try {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/setWebhook`, {
+      url: webhookUrl,
+      allowed_updates: ['message']
+    }, { timeout: 10000 });
+    console.log(`✅ Webhook de Telegram registrado: ${webhookUrl}`);
+  } catch (error) {
+    console.error('❌ Error registrando webhook:', error.message);
+  }
+}
+
+// ============================================================================
+// PROGRAMAR TAREAS AUTOMÁTICAS
+// ============================================================================
+
+// Resumen diario: 07:00 Canarias = 15:00 UTC (verano)
 cron.schedule('0 15 * * *', () => {
-  console.log('⏰ [' + new Date().toISOString() + '] Ejecutando resumen diario de correos...');
+  console.log('⏰ [' + new Date().toISOString() + '] Ejecutando resumen diario...');
   sendDailyEmailSummary();
 });
 
-console.log('✅ Tarea cron configurada: Se ejecutará cada día a las 15:00 UTC (07:00 Canarias)');
+// Resumen semanal: lunes 08:00 Canarias = 16:00 UTC (verano)
+cron.schedule('0 16 * * 1', () => {
+  console.log('⏰ [' + new Date().toISOString() + '] Ejecutando resumen semanal...');
+  sendWeeklyEmailSummary();
+});
+
+console.log('✅ Cron diario: 15:00 UTC (07:00 Canarias)');
+console.log('✅ Cron semanal: lunes 16:00 UTC (08:00 Canarias)');
 
 // ============================================================================
 // RUTAS EXPRESS
@@ -307,9 +379,48 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Email Summarizer Bot',
-    scheduled: '07:00 diariamente (horario Canarias)',
+    scheduled: '07:00 diario / 08:00 lunes semanal (horario Canarias)',
     timestamp: new Date()
   });
+});
+
+// Webhook de Telegram para recibir comandos
+app.post('/telegram-webhook', async (req, res) => {
+  res.sendStatus(200); // Responder rápido a Telegram
+
+  const message = req.body?.message;
+  if (!message) return;
+
+  const text = (message.text || '').trim();
+  const chatId = message.chat.id.toString();
+
+  // Solo responder al chat autorizado
+  if (chatId !== CONFIG.telegram_chat_id) {
+    console.log(`⚠️ Mensaje ignorado de chat no autorizado: ${chatId}`);
+    return;
+  }
+
+  console.log(`📩 Comando recibido: ${text}`);
+
+  if (text === '/resumen') {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
+      chat_id: chatId,
+      text: '⏳ Generando resumen, un momento...'
+    }).catch(() => {});
+    await sendDailyEmailSummary(chatId);
+  } else if (text === '/semanal') {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
+      chat_id: chatId,
+      text: '⏳ Generando resumen semanal, un momento...'
+    }).catch(() => {});
+    await sendWeeklyEmailSummary();
+  } else if (text === '/ayuda') {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
+      chat_id: chatId,
+      text: '📋 *Comandos disponibles:*\n\n/resumen — Resumen de los últimos correos\n/semanal — Resumen de los últimos 7 días\n/ayuda — Ver esta ayuda',
+      parse_mode: 'Markdown'
+    }).catch(() => {});
+  }
 });
 
 app.post('/trigger', async (req, res) => {
@@ -326,27 +437,12 @@ app.post('/trigger-test', async (req, res) => {
   console.log('🧪 Trigger TEST ejecutado (sin IMAP)');
   try {
     const testEmails = [
-      {
-        from: 'adeslas@asegurador.com',
-        subject: 'Rechazo de facturas EMT marzo',
-        preview: 'Rechazo de 3 facturas por falta de justificante',
-        date: new Date()
-      },
-      {
-        from: 'dr.garcia@clinicabandama.com',
-        subject: 'Informe de alta urgente',
-        preview: 'Necesito informe de Juan Martínez para derivación',
-        date: new Date()
-      },
-      {
-        from: 'rrhh@clinicabandama.com',
-        subject: 'Isabel Jiménez - Entrevista confirmada',
-        preview: 'Psiquiatra recién residenciada. Disponible mañana 16:00',
-        date: new Date()
-      }
+      { from: 'adeslas@asegurador.com', subject: 'Rechazo de facturas EMT marzo', preview: 'Rechazo de 3 facturas por falta de justificante', date: new Date() },
+      { from: 'dr.garcia@clinicabandama.com', subject: 'Informe de alta urgente', preview: 'Necesito informe de Juan Martínez para derivación', date: new Date() },
+      { from: 'rrhh@clinicabandama.com', subject: 'Isabel Jiménez - Entrevista confirmada', preview: 'Psiquiatra recién residenciada. Disponible mañana 16:00', date: new Date() }
     ];
 
-    const summary = await summarizeEmailsWithClaude(testEmails);
+    const summary = await summarizeEmailsWithClaude(testEmails, 'diario');
     await sendTelegramMessage(summary);
 
     res.json({ status: 'success', message: 'Resumen TEST enviado', summary });
@@ -360,9 +456,10 @@ app.get('/status', (req, res) => {
     service: 'Email Summarizer',
     status: 'running',
     config: {
-      schedule: '07:00 (horario Canarias)',
+      schedule_daily: '07:00 Canarias (lun-dom)',
+      schedule_weekly: '08:00 Canarias (solo lunes)',
       model: CONFIG.claude_model,
-      email_range: 'Últimas 24 horas'
+      webhook_active: !!CONFIG.app_url
     },
     timestamp: new Date()
   });
@@ -371,14 +468,16 @@ app.get('/status', (req, res) => {
 // ============================================================================
 // INICIAR SERVIDOR
 // ============================================================================
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`\n🎯 Servidor iniciado en puerto ${PORT}`);
-  console.log(`📡 Accesible en: http://localhost:${PORT}`);
   console.log('\n📋 Endpoints disponibles:');
   console.log(`   GET  / - Estado del servicio`);
   console.log(`   POST /trigger - Ejecutar resumen manualmente`);
   console.log(`   POST /trigger-test - Test sin IMAP`);
+  console.log(`   POST /telegram-webhook - Webhook de Telegram`);
   console.log(`   GET  /status - Estado detallado\n`);
+
+  await registerTelegramWebhook();
 });
 
 process.on('unhandledRejection', (reason) => {
