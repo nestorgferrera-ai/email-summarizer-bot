@@ -7,6 +7,7 @@
 const express = require('express');
 const axios = require('axios');
 const { google } = require('googleapis');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -17,12 +18,27 @@ app.use(express.json());
 // ============================================================================
 // CONFIGURACIÓN
 // ============================================================================
+
+// Leer credenciales Google: primero desde Secret File, luego desde variable de entorno
+function loadGoogleCredentials() {
+  const secretPath = '/etc/secrets/GOOGLE_CREDENTIALS_JSON';
+  if (fs.existsSync(secretPath)) {
+    console.log('✅ Credenciales Google cargadas desde Secret File');
+    return fs.readFileSync(secretPath, 'utf8');
+  }
+  if (process.env.GOOGLE_CREDENTIALS_JSON) {
+    console.log('✅ Credenciales Google cargadas desde variable de entorno');
+    return process.env.GOOGLE_CREDENTIALS_JSON;
+  }
+  console.log('⚠️  No se encontraron credenciales de Google');
+  return null;
+}
+
 const CONFIG = {
   telegram_token: process.env.LAUNDRY_TELEGRAM_TOKEN || process.env.TELEGRAM_TOKEN,
   google_sheet_id: process.env.GOOGLE_SHEET_ID,
-  google_credentials_json: process.env.GOOGLE_CREDENTIALS_JSON,
+  google_credentials_json: loadGoogleCredentials(),
   app_url: process.env.APP_URL || '',
-  // Chat IDs autorizados (separados por coma). Vacío = todos permitidos (no recomendado en producción)
   allowed_chat_ids: (process.env.ALLOWED_CHAT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
 };
 
