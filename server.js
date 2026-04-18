@@ -568,7 +568,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
     await laundryMsg(chatId,
       `🧺 *Bot de Lavandería — Clínica Bandama*\n\nHola ${fromName}!\n\n` +
       `*Comandos disponibles:*\n` +
-      `/nuevo — Registrar recepción de ropa de Selava\n` +
+      `/nuevo — Registrar envío a la empresa de lavandería (no usar)\n` +
       `/diario — Registrar envío de ropa a Selava\n` +
       `/resumen — Generar albarán de envíos por período\n` +
       `/cancelar — Cancelar registro en curso\n` +
@@ -579,7 +579,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
   if (t === '/ayuda' || t === '/help') {
     await laundryMsg(chatId,
       `📖 *Ayuda — Bot de Lavandería*\n\n` +
-      `/nuevo — Registrar recepción de ropa de Selava\n` +
+      `/nuevo — Registrar envío a la empresa de lavandería (no usar)\n` +
       `/diario — Registrar envío diario de ropa a Selava\n` +
       `/resumen — Generar albarán por período (Mar-Jue / Vie-Lun)\n` +
       `/cancelar — Cancelar el registro en curso\n\n` +
@@ -605,7 +605,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '📦 Registrar recepción de Selava (/nuevo)', callback_data: 'start_albaran' }],
+            [{ text: '📦 Registrar envío a la empresa de lavandería (no usar)', callback_data: 'start_albaran' }],
             [{ text: '🚚 Registrar envío a Selava (/diario)',     callback_data: 'start_diario'  }],
           ],
         },
