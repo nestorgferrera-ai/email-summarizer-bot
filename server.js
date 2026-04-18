@@ -429,6 +429,24 @@ async function getTotalsForPeriod(startDate, endDate) {
   }
 }
 
+// ---- Google Sheets: crear pestaña si no existe ----
+async function ensureSheetTabExists(sheets, spreadsheetId, tabName) {
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const exists = meta.data.sheets.some(s => s.properties.title === tabName);
+    if (exists) return true;
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      resource: { requests: [{ addSheet: { properties: { title: tabName } } }] },
+    });
+    console.log(`✅ Pestaña "${tabName}" creada automáticamente en Google Sheets`);
+    return true;
+  } catch (err) {
+    console.error(`❌ Error creando pestaña "${tabName}":`, err.message, err.response?.data || '');
+    return false;
+  }
+}
+
 // ---- Google Sheets: guardar resumen de período ----
 async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
   if (!LAUNDRY_CFG.resumen_sheet_id || !LAUNDRY_CFG.google_credentials) return false;
@@ -438,6 +456,7 @@ async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
       scopes: ['https://www.googleapis.com/auth/spreadsheets'],
     });
     const sheets = google.sheets({ version: 'v4', auth });
+    await ensureSheetTabExists(sheets, LAUNDRY_CFG.resumen_sheet_id, LAUNDRY_CFG.resumen_sheet_tab);
     const now = new Date();
     const generadoEl = now.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
@@ -458,7 +477,7 @@ async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
     console.log(`✅ Resumen guardado en "${LAUNDRY_CFG.resumen_sheet_tab}" — ${periodLabel}`);
     return true;
   } catch (err) {
-    console.error('❌ Error guardando resumen:', err.message);
+    console.error('❌ Error guardando resumen:', err.message, err.response?.data || '');
     return false;
   }
 }
