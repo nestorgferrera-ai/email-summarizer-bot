@@ -458,19 +458,23 @@ async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
     const sheets = google.sheets({ version: 'v4', auth });
     await ensureSheetTabExists(sheets, LAUNDRY_CFG.resumen_sheet_id, LAUNDRY_CFG.resumen_sheet_tab);
     const now = new Date();
-    const generadoEl = now.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const marcaTemporal = now.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
+    // Columnas igual que el sheet de recepción:
+    // A=MarcaTemporal B=Fecha C=Hora D=Sabanas E=Mantas F=Colchas G=FundasAlmohadas
+    // H=Almohadas I=Toallas J=ToallasPequeñas K=Alfombrillas L=Período M=Total
     const row = [
-      generadoEl, periodLabel,
-      formatDate(startDate), formatDate(endDate), rowCount,
+      marcaTemporal, formatDate(startDate), timeStr,
       totals.sabanas || 0, totals.mantas || 0, totals.colchas || 0,
       totals.fundas_almohadas || 0, totals.almohadas || 0,
       totals.toallas || 0, totals.toallas_pequenas || 0, totals.alfombrillas || 0,
+      `${periodLabel} (${formatDate(startDate)} → ${formatDate(endDate)}) — ${rowCount} envíos`,
       grandTotal,
     ];
     await sheets.spreadsheets.values.append({
       spreadsheetId: LAUNDRY_CFG.resumen_sheet_id,
-      range: `${LAUNDRY_CFG.resumen_sheet_tab}!A:N`,
+      range: `${LAUNDRY_CFG.resumen_sheet_tab}!A:M`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [row] },
     });
