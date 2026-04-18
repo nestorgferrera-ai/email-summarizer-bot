@@ -48,7 +48,12 @@ const EMAIL_CFG = {
 
 const LAUNDRY_CFG = {
   telegram_token:        process.env.LAUNDRY_TELEGRAM_TOKEN || process.env.TELEGRAM_TOKEN,
-  google_sheet_id:       process.env.GOOGLE_SHEET_ID,
+  albaran_sheet_id:      process.env.GOOGLE_SHEET_ID,
+  albaran_sheet_tab:     process.env.ALBARAN_SHEET_TAB     || 'Respuestas de formulario 1',
+  daily_sheet_id:        process.env.DAILY_SHEET_ID,
+  daily_sheet_tab:       process.env.DAILY_SHEET_TAB       || 'Envío Diario',
+  resumen_sheet_id:      process.env.RESUMEN_SHEET_ID      || process.env.DAILY_SHEET_ID,
+  resumen_sheet_tab:     process.env.RESUMEN_SHEET_TAB     || 'Albaran Entrega Selava',
   google_credentials:    loadGoogleCredentials(),
   app_url:               process.env.APP_URL || '',
   allowed_chat_ids:      (process.env.ALLOWED_CHAT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
@@ -248,7 +253,7 @@ async function sendWeeklyEmailSummary() {
 }
 
 // ============================================================================
-// LAUNDRY BOT — ARTÍCULOS Y SESIONES
+// LAUNDRY BOT — ARTÍCULOS, SESIONES Y GOOGLE SHEETS
 // ============================================================================
 const ITEMS = [
   { key: 'sabanas',          label: 'Sábanas' },
@@ -261,17 +266,51 @@ const ITEMS = [
   { key: 'alfombrillas',     label: 'Alfombrillas' },
 ];
 
+const ITEM_COL_START = 4; // columna D (0-indexed)
+
 const STATE = { IDLE: 'idle', ASKING_RESPONSABLE: 'asking_responsable', ASKING_ITEM: 'asking_item', CONFIRMING: 'confirming' };
 const sessions = new Map();
 
 function getSession(chatId) {
-  if (!sessions.has(chatId)) sessions.set(chatId, { state: STATE.IDLE, step: 0, responsable: null, data: {} });
+  if (!sessions.has(chatId)) sessions.set(chatId, { state: STATE.IDLE, flow: null, step: 0, responsable: null, data: {} });
   return sessions.get(chatId);
 }
 function resetSession(chatId) {
-  sessions.set(chatId, { state: STATE.IDLE, step: 0, responsable: null, data: {} });
+  sessions.set(chatId, { state: STATE.IDLE, flow: null, step: 0, responsable: null, data: {} });
 }
 
+// ---- Utilidades de fecha ----
+function formatDate(date) {
+  return date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+function mostRecentWeekday(target) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - (d.getDay() - target + 7) % 7);
+  return d;
+}
+function getPeriodDates(period) {
+  if (period === 'martes_jueves') {
+    const start = mostRecentWeekday(2);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 2);
+    return { startDate: start, endDate: end, label: 'Martes – Jueves' };
+  }
+  const start = mostRecentWeekday(5);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 3);
+  return { startDate: start, endDate: end, label: 'Viernes – Lunes' };
+}
+function parseSheetDate(str) {
+  if (!str) return null;
+  const [d, m, y] = str.split('/').map(Number);
+  if (!d || !m || !y) return null;
+  const date = new Date(y, m - 1, d);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+// ---- Telegram ----
 async function laundryMsg(chatId, text, extra = {}) {
   try {
     await axios.post(`https://api.telegram.org/bot${LAUNDRY_CFG.telegram_token}/sendMessage`, {
@@ -282,21 +321,22 @@ async function laundryMsg(chatId, text, extra = {}) {
   }
 }
 
-async function appendToSheet(responsable, data) {
-  if (!LAUNDRY_CFG.google_sheet_id || !LAUNDRY_CFG.google_credentials) {
-    console.log('⚠️  Google Sheets no configurado');
+// ---- Google Sheets: albarán de recepción ----
+async function saveAlbaran(responsable, data) {
+  if (!LAUNDRY_CFG.albaran_sheet_id || !LAUNDRY_CFG.google_credentials) {
+    console.log('⚠️  Google Sheets (albarán) no configurado');
     return false;
   }
   try {
-    const credentials = JSON.parse(LAUNDRY_CFG.google_credentials);
-    const auth = new google.auth.GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
     const sheets = google.sheets({ version: 'v4', auth });
-
     const now = new Date();
     const marcaTemporal = now.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const dateStr = now.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const dateStr = formatDate(now);
     const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
     const row = [
       marcaTemporal, dateStr, timeStr,
       data.sabanas || 0, data.mantas || 0, data.colchas || 0,
@@ -304,25 +344,161 @@ async function appendToSheet(responsable, data) {
       data.toallas || 0, data.toallas_pequenas || 0, data.alfombrillas || 0,
       'Telegram Bot', responsable,
     ];
-
     await sheets.spreadsheets.values.append({
-      spreadsheetId: LAUNDRY_CFG.google_sheet_id,
-      range: 'Respuestas de formulario 1!A:M',
+      spreadsheetId: LAUNDRY_CFG.albaran_sheet_id,
+      range: `${LAUNDRY_CFG.albaran_sheet_tab}!A:M`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [row] },
     });
-
-    console.log(`✅ Albarán guardado — ${responsable} ${dateStr} ${timeStr}`);
+    console.log(`✅ Albarán guardado — ${responsable} ${dateStr}`);
     return true;
   } catch (err) {
-    console.error('❌ Error guardando en Google Sheets:', err.message);
+    console.error('❌ Error guardando albarán:', err.message);
     return false;
   }
 }
 
-function buildSummary(responsable, data) {
+// ---- Google Sheets: envío diario ----
+async function saveDailyEntry(responsable, data) {
+  if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) {
+    console.log('⚠️  Google Sheets (envío diario) no configurado');
+    return false;
+  }
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const now = new Date();
+    const marcaTemporal = now.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dateStr = formatDate(now);
+    const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    // A=MarcaTemporal B=Fecha C=Hora D=Responsable E-L=artículos
+    const row = [
+      marcaTemporal, dateStr, timeStr, responsable,
+      data.sabanas || 0, data.mantas || 0, data.colchas || 0,
+      data.fundas_almohadas || 0, data.almohadas || 0,
+      data.toallas || 0, data.toallas_pequenas || 0, data.alfombrillas || 0,
+    ];
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: LAUNDRY_CFG.daily_sheet_id,
+      range: `${LAUNDRY_CFG.daily_sheet_tab}!A:L`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [row] },
+    });
+    console.log(`✅ Envío diario guardado — ${responsable} ${dateStr}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Error guardando envío diario:', err.message);
+    return false;
+  }
+}
+
+// ---- Google Sheets: leer totales por período ----
+async function getTotalsForPeriod(startDate, endDate) {
+  if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: LAUNDRY_CFG.daily_sheet_id,
+      range: `${LAUNDRY_CFG.daily_sheet_tab}!A:M`,
+    });
+    const rows = response.data.values || [];
+    const totals = Object.fromEntries(ITEMS.map(i => [i.key, 0]));
+    let rowCount = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || !row[1]) continue;
+      const rowDate = parseSheetDate(row[1]);
+      if (!rowDate || rowDate < startDate || rowDate > endDate) continue;
+      rowCount++;
+      ITEMS.forEach((item, idx) => {
+        const val = parseInt(row[ITEM_COL_START + idx], 10);
+        if (!isNaN(val)) totals[item.key] += val;
+      });
+    }
+    return { totals, rowCount };
+  } catch (err) {
+    console.error('❌ Error leyendo envíos diarios:', err.message);
+    return null;
+  }
+}
+
+// ---- Google Sheets: crear pestaña si no existe ----
+async function ensureSheetTabExists(sheets, spreadsheetId, tabName) {
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const exists = meta.data.sheets.some(s => s.properties.title === tabName);
+    if (exists) return true;
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      resource: { requests: [{ addSheet: { properties: { title: tabName } } }] },
+    });
+    console.log(`✅ Pestaña "${tabName}" creada automáticamente en Google Sheets`);
+    return true;
+  } catch (err) {
+    console.error(`❌ Error creando pestaña "${tabName}":`, err.message, err.response?.data || '');
+    return false;
+  }
+}
+
+// ---- Google Sheets: guardar resumen de período ----
+async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
+  if (!LAUNDRY_CFG.resumen_sheet_id || !LAUNDRY_CFG.google_credentials) return false;
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    await ensureSheetTabExists(sheets, LAUNDRY_CFG.resumen_sheet_id, LAUNDRY_CFG.resumen_sheet_tab);
+    const now = new Date();
+    const generadoEl = now.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
+    const row = [
+      generadoEl, periodLabel,
+      formatDate(startDate), formatDate(endDate), rowCount,
+      totals.sabanas || 0, totals.mantas || 0, totals.colchas || 0,
+      totals.fundas_almohadas || 0, totals.almohadas || 0,
+      totals.toallas || 0, totals.toallas_pequenas || 0, totals.alfombrillas || 0,
+      grandTotal,
+    ];
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: LAUNDRY_CFG.resumen_sheet_id,
+      range: `${LAUNDRY_CFG.resumen_sheet_tab}!A:N`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [row] },
+    });
+    console.log(`✅ Resumen guardado en "${LAUNDRY_CFG.resumen_sheet_tab}" — ${periodLabel}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Error guardando resumen:', err.message, err.response?.data || '');
+    return false;
+  }
+}
+
+// ---- Lógica de conversación ----
+function buildConfirmText(flow, responsable, data) {
   const lines = ITEMS.map(item => `  • ${item.label}: *${data[item.key] || 0}*`);
-  return `📋 *Resumen del albarán*\n\n👤 Responsable: *${responsable}*\n\n${lines.join('\n')}\n\n¿Confirmas la entrega?`;
+  const titulo = flow === 'albaran' ? '📋 *Resumen del albarán de recepción*' : '🚚 *Resumen del envío diario*';
+  const pregunta = flow === 'albaran' ? '¿Confirmas la recepción?' : '¿Confirmas el envío?';
+  return `${titulo}\n\n👤 Responsable: *${responsable}*\n\n${lines.join('\n')}\n\n${pregunta}`;
+}
+
+async function startLaundryFlow(chatId, flow) {
+  resetSession(chatId);
+  const s = getSession(chatId);
+  s.state = STATE.ASKING_RESPONSABLE;
+  s.flow = flow;
+  const prompt = flow === 'albaran'
+    ? '👤 ¿Cuál es tu nombre? (Responsable de la recepción)'
+    : '👤 ¿Cuál es tu nombre? (Responsable del envío)';
+  await laundryMsg(chatId, prompt);
 }
 
 async function handleLaundryMessage(chatId, text, fromName) {
@@ -337,25 +513,101 @@ async function handleLaundryMessage(chatId, text, fromName) {
   if (t === '/start' || t === '/inicio') {
     resetSession(chatId);
     await laundryMsg(chatId,
-      `👕 *Bot de Albaranes de Lavandería*\n\nHola ${fromName}! Aquí puedes registrar las entregas de ropa de Selava.\n\n` +
-      `/nuevo — Registrar nueva entrega\n/cancelar — Cancelar registro\n/ayuda — Ver ayuda`);
+      `🧺 *Bot de Lavandería — Clínica Bandama*\n\nHola ${fromName}!\n\n` +
+      `*Comandos disponibles:*\n` +
+      `/nuevo — Registrar recepción de ropa de Selava\n` +
+      `/diario — Registrar envío de ropa a Selava\n` +
+      `/resumen — Generar albarán de envíos por período\n` +
+      `/cancelar — Cancelar registro en curso\n` +
+      `/ayuda — Ver esta ayuda`);
     return;
   }
+
   if (t === '/ayuda' || t === '/help') {
     await laundryMsg(chatId,
-      `📖 *Ayuda — Bot de Lavandería*\n\n/nuevo — Registrar nueva entrega de Selava\n/cancelar — Cancelar el registro en curso\n/ayuda — Ver esta ayuda\n\nEscribe *0* si no hay ningún artículo de ese tipo.`);
+      `📖 *Ayuda — Bot de Lavandería*\n\n` +
+      `/nuevo — Registrar recepción de ropa de Selava\n` +
+      `/diario — Registrar envío diario de ropa a Selava\n` +
+      `/resumen — Generar albarán por período (Mar-Jue / Vie-Lun)\n` +
+      `/cancelar — Cancelar el registro en curso\n\n` +
+      `Escribe *0* si no hay unidades de algún artículo.`);
     return;
   }
+
   if (t === '/cancelar' || t === '/cancel') {
     resetSession(chatId);
-    await laundryMsg(chatId, '❌ Registro cancelado. Escribe /nuevo para empezar de nuevo.');
+    await laundryMsg(chatId, '❌ Registro cancelado.');
     return;
   }
+
   if (t === '/nuevo') {
-    resetSession(chatId);
-    const s = getSession(chatId);
-    s.state = STATE.ASKING_RESPONSABLE;
-    await laundryMsg(chatId, '👤 ¿Cuál es tu nombre? (Responsable de la entrega)');
+    await laundryMsg(chatId,
+      `ℹ️ */nuevo* es para registrar la *recepción* de ropa de Selava.\n\n` +
+      `Para registrar un *envío a Selava* usa */diario*.\n\n¿Qué quieres hacer?`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📦 Registrar recepción de Selava (/nuevo)', callback_data: 'start_albaran' }],
+            [{ text: '🚚 Registrar envío a Selava (/diario)',     callback_data: 'start_diario'  }],
+          ],
+        },
+      });
+    return;
+  }
+
+  if (t === '/diario') {
+    await startLaundryFlow(chatId, 'diario');
+    return;
+  }
+
+  if (t === '/debug') {
+    await laundryMsg(chatId, '🔍 Ejecutando diagnóstico de Google Sheets...');
+    const lines = [];
+    lines.push(`📋 *Sheet ID (resumen):* \`${LAUNDRY_CFG.resumen_sheet_id || '❌ NO CONFIGURADO'}\``);
+    lines.push(`📑 *Pestaña (resumen):* \`${LAUNDRY_CFG.resumen_sheet_tab}\``);
+    lines.push(`🔑 *Credenciales:* ${LAUNDRY_CFG.google_credentials ? '✅ Cargadas' : '❌ No encontradas'}`);
+    if (LAUNDRY_CFG.resumen_sheet_id && LAUNDRY_CFG.google_credentials) {
+      try {
+        const auth = new google.auth.GoogleAuth({
+          credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+          scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+        });
+        const sheets = google.sheets({ version: 'v4', auth });
+        lines.push('🌐 *Conexión Google API:* ✅ OK');
+        try {
+          const meta = await sheets.spreadsheets.get({ spreadsheetId: LAUNDRY_CFG.resumen_sheet_id });
+          lines.push(`📊 *Spreadsheet:* ✅ "${meta.data.properties.title}"`);
+          const tabs = meta.data.sheets.map(s => s.properties.title);
+          lines.push(`📂 *Pestañas existentes:* ${tabs.map(t => `\`${t}\``).join(', ')}`);
+          const tabExists = tabs.includes(LAUNDRY_CFG.resumen_sheet_tab);
+          lines.push(`🎯 *Pestaña "${LAUNDRY_CFG.resumen_sheet_tab}":* ${tabExists ? '✅ Existe' : '❌ NO EXISTE'}`);
+        } catch (e) {
+          lines.push(`📊 *Spreadsheet:* ❌ Error — \`${e.message}\``);
+          if (e.response?.data?.error) lines.push(`   Detalles: \`${e.response.data.error.message}\``);
+        }
+      } catch (e) {
+        lines.push(`🌐 *Conexión Google API:* ❌ Error — \`${e.message}\``);
+      }
+    }
+    await laundryMsg(chatId, lines.join('\n'));
+    return;
+  }
+
+  if (t === '/resumen') {
+    const { startDate: sMJ, endDate: eMJ } = getPeriodDates('martes_jueves');
+    const { startDate: sVM, endDate: eVM } = getPeriodDates('viernes_lunes');
+    await laundryMsg(chatId,
+      `📊 *Generar albarán de envío a Selava*\n\nElige el período a totalizar:\n\n` +
+      `📅 *Martes – Jueves:* ${formatDate(sMJ)} → ${formatDate(eMJ)}\n` +
+      `📅 *Viernes – Lunes:* ${formatDate(sVM)} → ${formatDate(eVM)}`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📅 Martes – Jueves', callback_data: 'resumen_martes_jueves' }],
+            [{ text: '📅 Viernes – Lunes',  callback_data: 'resumen_viernes_lunes' }],
+          ],
+        },
+      });
     return;
   }
 
@@ -364,15 +616,14 @@ async function handleLaundryMessage(chatId, text, fromName) {
     session.responsable = t;
     session.state = STATE.ASKING_ITEM;
     session.step = 0;
-    await laundryMsg(chatId,
-      `✅ Hola *${t}*!\n\nVamos a registrar la entrega. Escribe *0* si no hay ninguno.\n\n*${ITEMS[0].label}* — ¿Cuántas unidades?`);
+    await laundryMsg(chatId, `✅ Hola *${t}*! Escribe *0* si no hay ninguno.\n\n*${ITEMS[0].label}* — ¿Cuántas unidades?`);
     return;
   }
 
   if (session.state === STATE.ASKING_ITEM) {
     const qty = parseInt(t, 10);
     if (isNaN(qty) || qty < 0) {
-      await laundryMsg(chatId, `⚠️ Introduce un número válido (o *0*).\n\n*${ITEMS[session.step].label}* — ¿Cuántas unidades?`);
+      await laundryMsg(chatId, `⚠️ Introduce un número válido.\n\n*${ITEMS[session.step].label}* — ¿Cuántas unidades?`);
       return;
     }
     session.data[ITEMS[session.step].key] = qty;
@@ -381,7 +632,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
       await laundryMsg(chatId, `*${ITEMS[session.step].label}* — ¿Cuántas unidades?`);
     } else {
       session.state = STATE.CONFIRMING;
-      await laundryMsg(chatId, buildSummary(session.responsable, session.data), {
+      await laundryMsg(chatId, buildConfirmText(session.flow, session.responsable, session.data), {
         reply_markup: { inline_keyboard: [[{ text: '✅ Confirmar', callback_data: 'confirm' }, { text: '❌ Cancelar', callback_data: 'cancel' }]] },
       });
     }
@@ -393,39 +644,80 @@ async function handleLaundryMessage(chatId, text, fromName) {
     return;
   }
 
-  await laundryMsg(chatId, 'Escribe /nuevo para registrar una entrega.\nO /ayuda para ver los comandos.');
+  await laundryMsg(chatId, 'Escribe /nuevo para registrar una recepción, /diario para un envío, o /ayuda para ver los comandos.');
 }
 
 async function handleLaundryCallback(chatId, callbackData, queryId) {
   await axios.post(`https://api.telegram.org/bot${LAUNDRY_CFG.telegram_token}/answerCallbackQuery`,
     { callback_query_id: queryId }, { timeout: 5000 }).catch(() => {});
 
+  if (callbackData === 'start_albaran') { await startLaundryFlow(chatId, 'albaran'); return; }
+  if (callbackData === 'start_diario')  { await startLaundryFlow(chatId, 'diario');  return; }
+
+  if (callbackData === 'resumen_martes_jueves' || callbackData === 'resumen_viernes_lunes') {
+    const periodKey = callbackData === 'resumen_martes_jueves' ? 'martes_jueves' : 'viernes_lunes';
+    const { startDate, endDate, label } = getPeriodDates(periodKey);
+    await laundryMsg(chatId, `⏳ Calculando totales para *${label}* (${formatDate(startDate)} → ${formatDate(endDate)})...`);
+    const result = await getTotalsForPeriod(startDate, endDate);
+    if (!result) {
+      await laundryMsg(chatId, '❌ No se pudo conectar con Google Sheets. Contacta con el administrador.');
+      return;
+    }
+    const { totals, rowCount } = result;
+    if (rowCount === 0) {
+      await laundryMsg(chatId, `ℹ️ No hay registros de envíos para *${label}* (${formatDate(startDate)} → ${formatDate(endDate)}).\n\nUsa /diario para registrar envíos.`);
+      return;
+    }
+    await laundryMsg(chatId, '⏳ Guardando albarán en Google Sheets...');
+    const saved = await saveResumen(label, startDate, endDate, totals, rowCount);
+    const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
+    const lines = ITEMS.map(item => `  • ${item.label}: *${totals[item.key] || 0}*`);
+    const sheetsMsg = saved
+      ? `\n\n✅ _Guardado en la hoja "${LAUNDRY_CFG.resumen_sheet_tab}"._`
+      : `\n\n⚠️ _No se pudo guardar en Google Sheets._`;
+    await laundryMsg(chatId,
+      `📊 *Albarán de Envío a Selava*\n\n` +
+      `📅 Período: *${label}*\n` +
+      `🗓 ${formatDate(startDate)} → ${formatDate(endDate)}\n` +
+      `📋 Registros: ${rowCount} envío${rowCount !== 1 ? 's' : ''}\n\n` +
+      `${lines.join('\n')}\n\n` +
+      `📦 *TOTAL PIEZAS: ${grandTotal}*` + sheetsMsg);
+    return;
+  }
+
   const session = getSession(chatId);
   if (session.state !== STATE.CONFIRMING) {
-    await laundryMsg(chatId, 'No hay ningún albarán pendiente. Usa /nuevo para empezar.');
+    await laundryMsg(chatId, 'No hay ningún registro pendiente. Usa /nuevo o /diario para empezar.');
     return;
   }
   if (callbackData === 'cancel') {
     resetSession(chatId);
-    await laundryMsg(chatId, '❌ Albarán cancelado. Usa /nuevo para empezar de nuevo.');
+    await laundryMsg(chatId, '❌ Registro cancelado.');
     return;
   }
   if (callbackData === 'confirm') {
-    await laundryMsg(chatId, '⏳ Guardando albarán...');
-    const saved = await appendToSheet(session.responsable, session.data);
+    const isAlbaran = session.flow === 'albaran';
+    await laundryMsg(chatId, `⏳ Guardando ${isAlbaran ? 'albarán' : 'envío diario'}...`);
+    const saved = isAlbaran
+      ? await saveAlbaran(session.responsable, session.data)
+      : await saveDailyEntry(session.responsable, session.data);
     const { responsable, data } = session;
     resetSession(chatId);
-
     const now = new Date();
-    const dateStr = now.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    const dateStr = formatDate(now);
     const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
     const total = ITEMS.reduce((sum, item) => sum + (data[item.key] || 0), 0);
-
-    await laundryMsg(chatId,
-      `${saved ? '✅' : '⚠️'} *Albarán ${saved ? 'registrado correctamente' : 'registrado (sin Google Sheets)'}*\n\n` +
-      `📅 ${dateStr} a las ${timeStr}\n👤 ${responsable}\n📦 Total: *${total} unidades*\n\n` +
-      `${saved ? '_Guardado en Google Sheets._' : '_⚠️ No se pudo guardar en Sheets. Avisa al administrador._'}\n\nUsa /nuevo para registrar otra entrega.`
-    );
+    const titulo = isAlbaran ? '✅ *Albarán registrado correctamente*' : '✅ *Envío diario registrado*';
+    const nextCmd = isAlbaran
+      ? 'Usa /nuevo para registrar otra recepción.'
+      : 'Usa /diario para registrar otro envío.\nUsa /resumen para generar el albarán por período.';
+    if (saved) {
+      await laundryMsg(chatId,
+        `${titulo}\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}\n📦 Total artículos: *${total} unidades*\n\n_Los datos se han guardado en Google Sheets._\n\n${nextCmd}`);
+    } else {
+      await laundryMsg(chatId,
+        `⚠️ *Registrado (sin Google Sheets)*\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}\n📦 Total artículos: *${total} unidades*\n\n_No se pudo guardar en Google Sheets. Contacta con el administrador._\n\n${nextCmd}`);
+    }
   }
 }
 
