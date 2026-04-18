@@ -67,8 +67,8 @@ const ITEMS = [
   { key: 'alfombrillas',     label: 'Alfombrillas' },
 ];
 
-// Columnas A=MarcaTemporal B=Fecha C=Hora D..K=artículos L=Origen M=Responsable
-const ITEM_COL_START = 3;
+// Columnas: A=MarcaTemporal B=Fecha C=Hora D=Responsable E..L=artículos
+const ITEM_COL_START = 4;
 
 // ============================================================================
 // UTILIDADES DE FECHAS
@@ -233,17 +233,17 @@ async function saveDailyEntry(responsable, data) {
     const dateStr = formatDate(now);
     const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
+    // Columnas: A=MarcaTemporal B=Fecha C=Hora D=Responsable E-L=artículos
     const row = [
-      marcaTemporal, dateStr, timeStr,
+      marcaTemporal, dateStr, timeStr, responsable,
       data.sabanas || 0, data.mantas || 0, data.colchas || 0,
       data.fundas_almohadas || 0, data.almohadas || 0,
       data.toallas || 0, data.toallas_pequenas || 0, data.alfombrillas || 0,
-      'Telegram Bot', responsable,
     ];
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: CONFIG.daily_sheet_id,
-      range: `${CONFIG.daily_sheet_tab}!A:M`,
+      range: `${CONFIG.daily_sheet_tab}!A:L`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [row] },
     });
