@@ -593,6 +593,11 @@ async function handleLaundryMessage(chatId, text, fromName) {
     return;
   }
 
+  if (t === '/miid') {
+    await laundryMsg(chatId, `🪪 Tu Chat ID es: \`${chatId}\`\n\nPásaselo al administrador para que te añada al bot.`);
+    return;
+  }
+
   if (t === '/nuevo') {
     await laundryMsg(chatId,
       `ℹ️ */nuevo* es para registrar la *recepción* de ropa de Selava.\n\n` +
