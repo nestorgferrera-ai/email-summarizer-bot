@@ -10,6 +10,7 @@ const { simpleParser } = require('mailparser');
 const { google } = require('googleapis');
 const axios = require('axios');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const app = express();
@@ -57,6 +58,7 @@ const LAUNDRY_CFG = {
   google_credentials:    loadGoogleCredentials(),
   app_url:               process.env.APP_URL || '',
   allowed_chat_ids:      (process.env.ALLOWED_CHAT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
+  resumen_email_to:      (process.env.RESUMEN_EMAIL_TO || '').split(',').map(s => s.trim()).filter(Boolean),
 };
 
 // ============================================================================
@@ -447,6 +449,53 @@ async function ensureSheetTabExists(sheets, spreadsheetId, tabName) {
   }
 }
 
+// ---- Email: enviar resumen de período ----
+async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCount) {
+  if (!LAUNDRY_CFG.resumen_email_to.length || !EMAIL_CFG.ionos_email || !EMAIL_CFG.ionos_password) return false;
+  try {
+    const transporter = nodemailer.createTransport({
+      host: EMAIL_CFG.ionos_imap_host.replace('imap.', 'smtp.'),
+      port: 587,
+      secure: false,
+      auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
+    });
+    const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
+    const itemRows = ITEMS.map(item =>
+      `<tr><td style="padding:4px 12px">${item.label}</td><td style="padding:4px 12px;text-align:right"><strong>${totals[item.key] || 0}</strong></td></tr>`
+    ).join('');
+    const html = `
+<div style="font-family:Arial,sans-serif;max-width:500px">
+  <h2 style="color:#2c3e50">📊 Albarán de Envío a Selava</h2>
+  <p><strong>Período:</strong> ${periodLabel}<br>
+     <strong>Fechas:</strong> ${formatDate(startDate)} → ${formatDate(endDate)}<br>
+     <strong>Registros:</strong> ${rowCount} envío${rowCount !== 1 ? 's' : ''}</p>
+  <table style="border-collapse:collapse;width:100%">
+    <thead><tr style="background:#f0f0f0">
+      <th style="padding:6px 12px;text-align:left">Artículo</th>
+      <th style="padding:6px 12px;text-align:right">Unidades</th>
+    </tr></thead>
+    <tbody>${itemRows}</tbody>
+    <tfoot><tr style="background:#2c3e50;color:white">
+      <td style="padding:6px 12px"><strong>TOTAL PIEZAS</strong></td>
+      <td style="padding:6px 12px;text-align:right"><strong>${grandTotal}</strong></td>
+    </tr></tfoot>
+  </table>
+  <p style="color:#888;font-size:12px;margin-top:16px">Generado automáticamente — Bot Lavandería Clínica Bandama</p>
+</div>`;
+    await transporter.sendMail({
+      from: `"Bot Lavandería" <${EMAIL_CFG.ionos_email}>`,
+      to: LAUNDRY_CFG.resumen_email_to.join(', '),
+      subject: `Albarán Envío Selava — ${periodLabel} (${formatDate(startDate)} → ${formatDate(endDate)})`,
+      html,
+    });
+    console.log(`✅ Email resumen enviado a: ${LAUNDRY_CFG.resumen_email_to.join(', ')}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Error enviando email resumen:', err.message);
+    return false;
+  }
+}
+
 // ---- Google Sheets: guardar resumen de período ----
 async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
   if (!LAUNDRY_CFG.resumen_sheet_id || !LAUNDRY_CFG.google_credentials) return false;
@@ -673,19 +722,26 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
       return;
     }
     await laundryMsg(chatId, '⏳ Guardando albarán en Google Sheets...');
-    const saved = await saveResumen(label, startDate, endDate, totals, rowCount);
+    const [saved, emailed] = await Promise.all([
+      saveResumen(label, startDate, endDate, totals, rowCount),
+      sendResumenEmail(label, startDate, endDate, totals, rowCount),
+    ]);
     const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
     const lines = ITEMS.map(item => `  • ${item.label}: *${totals[item.key] || 0}*`);
     const sheetsMsg = saved
-      ? `\n\n✅ _Guardado en la hoja "${LAUNDRY_CFG.resumen_sheet_tab}"._`
-      : `\n\n⚠️ _No se pudo guardar en Google Sheets._`;
+      ? `✅ _Guardado en Google Sheets._`
+      : `⚠️ _No se pudo guardar en Google Sheets._`;
+    const emailMsg = LAUNDRY_CFG.resumen_email_to.length
+      ? (emailed ? `✅ _Email enviado._` : `⚠️ _No se pudo enviar el email._`)
+      : '';
+    const statusMsg = [sheetsMsg, emailMsg].filter(Boolean).join('\n');
     await laundryMsg(chatId,
       `📊 *Albarán de Envío a Selava*\n\n` +
       `📅 Período: *${label}*\n` +
       `🗓 ${formatDate(startDate)} → ${formatDate(endDate)}\n` +
       `📋 Registros: ${rowCount} envío${rowCount !== 1 ? 's' : ''}\n\n` +
       `${lines.join('\n')}\n\n` +
-      `📦 *TOTAL PIEZAS: ${grandTotal}*` + sheetsMsg);
+      `📦 *TOTAL PIEZAS: ${grandTotal}*\n\n` + statusMsg);
     return;
   }
 
