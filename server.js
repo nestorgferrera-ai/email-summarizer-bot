@@ -560,6 +560,39 @@ async function handleLaundryMessage(chatId, text, fromName) {
     return;
   }
 
+  if (t === '/debug') {
+    await laundryMsg(chatId, '🔍 Ejecutando diagnóstico de Google Sheets...');
+    const lines = [];
+    lines.push(`📋 *Sheet ID (resumen):* \`${LAUNDRY_CFG.resumen_sheet_id || '❌ NO CONFIGURADO'}\``);
+    lines.push(`📑 *Pestaña (resumen):* \`${LAUNDRY_CFG.resumen_sheet_tab}\``);
+    lines.push(`🔑 *Credenciales:* ${LAUNDRY_CFG.google_credentials ? '✅ Cargadas' : '❌ No encontradas'}`);
+    if (LAUNDRY_CFG.resumen_sheet_id && LAUNDRY_CFG.google_credentials) {
+      try {
+        const auth = new google.auth.GoogleAuth({
+          credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+          scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+        });
+        const sheets = google.sheets({ version: 'v4', auth });
+        lines.push('🌐 *Conexión Google API:* ✅ OK');
+        try {
+          const meta = await sheets.spreadsheets.get({ spreadsheetId: LAUNDRY_CFG.resumen_sheet_id });
+          lines.push(`📊 *Spreadsheet:* ✅ "${meta.data.properties.title}"`);
+          const tabs = meta.data.sheets.map(s => s.properties.title);
+          lines.push(`📂 *Pestañas existentes:* ${tabs.map(t => `\`${t}\``).join(', ')}`);
+          const tabExists = tabs.includes(LAUNDRY_CFG.resumen_sheet_tab);
+          lines.push(`🎯 *Pestaña "${LAUNDRY_CFG.resumen_sheet_tab}":* ${tabExists ? '✅ Existe' : '❌ NO EXISTE'}`);
+        } catch (e) {
+          lines.push(`📊 *Spreadsheet:* ❌ Error — \`${e.message}\``);
+          if (e.response?.data?.error) lines.push(`   Detalles: \`${e.response.data.error.message}\``);
+        }
+      } catch (e) {
+        lines.push(`🌐 *Conexión Google API:* ❌ Error — \`${e.message}\``);
+      }
+    }
+    await laundryMsg(chatId, lines.join('\n'));
+    return;
+  }
+
   if (t === '/resumen') {
     const { startDate: sMJ, endDate: eMJ } = getPeriodDates('martes_jueves');
     const { startDate: sVM, endDate: eVM } = getPeriodDates('viernes_lunes');
