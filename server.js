@@ -614,11 +614,13 @@ async function handleLaundryMessage(chatId, text, fromName) {
   }
 
   if (t === '/debug') {
-    await laundryMsg(chatId, '🔍 Ejecutando diagnóstico de Google Sheets...');
+    await laundryMsg(chatId, '🔍 Ejecutando diagnóstico...');
     const lines = [];
+
+    // Google Sheets
     lines.push(`📋 *Sheet ID (resumen):* \`${LAUNDRY_CFG.resumen_sheet_id || '❌ NO CONFIGURADO'}\``);
     lines.push(`📑 *Pestaña (resumen):* \`${LAUNDRY_CFG.resumen_sheet_tab}\``);
-    lines.push(`🔑 *Credenciales:* ${LAUNDRY_CFG.google_credentials ? '✅ Cargadas' : '❌ No encontradas'}`);
+    lines.push(`🔑 *Credenciales Google:* ${LAUNDRY_CFG.google_credentials ? '✅ Cargadas' : '❌ No encontradas'}`);
     if (LAUNDRY_CFG.resumen_sheet_id && LAUNDRY_CFG.google_credentials) {
       try {
         const auth = new google.auth.GoogleAuth({
@@ -631,17 +633,38 @@ async function handleLaundryMessage(chatId, text, fromName) {
           const meta = await sheets.spreadsheets.get({ spreadsheetId: LAUNDRY_CFG.resumen_sheet_id });
           lines.push(`📊 *Spreadsheet:* ✅ "${meta.data.properties.title}"`);
           const tabs = meta.data.sheets.map(s => s.properties.title);
-          lines.push(`📂 *Pestañas existentes:* ${tabs.map(t => `\`${t}\``).join(', ')}`);
+          lines.push(`📂 *Pestañas:* ${tabs.map(t => `\`${t}\``).join(', ')}`);
           const tabExists = tabs.includes(LAUNDRY_CFG.resumen_sheet_tab);
           lines.push(`🎯 *Pestaña "${LAUNDRY_CFG.resumen_sheet_tab}":* ${tabExists ? '✅ Existe' : '❌ NO EXISTE'}`);
         } catch (e) {
-          lines.push(`📊 *Spreadsheet:* ❌ Error — \`${e.message}\``);
-          if (e.response?.data?.error) lines.push(`   Detalles: \`${e.response.data.error.message}\``);
+          lines.push(`📊 *Spreadsheet:* ❌ \`${e.message}\``);
         }
       } catch (e) {
-        lines.push(`🌐 *Conexión Google API:* ❌ Error — \`${e.message}\``);
+        lines.push(`🌐 *Conexión Google API:* ❌ \`${e.message}\``);
       }
     }
+
+    // Email
+    lines.push('');
+    lines.push(`📧 *SMTP host:* \`${EMAIL_CFG.ionos_imap_host.replace('imap.', 'smtp.')}\``);
+    lines.push(`👤 *SMTP usuario:* \`${EMAIL_CFG.ionos_email || '❌ NO CONFIGURADO'}\``);
+    lines.push(`🔐 *SMTP contraseña:* ${EMAIL_CFG.ionos_password ? '✅ Configurada' : '❌ NO CONFIGURADA'}`);
+    lines.push(`📬 *Destinatarios (RESUMEN_EMAIL_TO):* ${LAUNDRY_CFG.resumen_email_to.length ? LAUNDRY_CFG.resumen_email_to.map(e => `\`${e}\``).join(', ') : '❌ NO CONFIGURADO'}`);
+    if (EMAIL_CFG.ionos_email && EMAIL_CFG.ionos_password) {
+      try {
+        const transporter = nodemailer.createTransport({
+          host: EMAIL_CFG.ionos_imap_host.replace('imap.', 'smtp.'),
+          port: 587,
+          secure: false,
+          auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
+        });
+        await transporter.verify();
+        lines.push('✉️ *Conexión SMTP:* ✅ OK');
+      } catch (e) {
+        lines.push(`✉️ *Conexión SMTP:* ❌ \`${e.message}\``);
+      }
+    }
+
     await laundryMsg(chatId, lines.join('\n'));
     return;
   }
