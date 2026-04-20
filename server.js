@@ -555,13 +555,19 @@ async function startLaundryFlow(chatId, flow) {
 }
 
 async function handleLaundryMessage(chatId, text, fromName) {
+  const t = text.trim();
+
+  if (t === '/miid') {
+    await laundryMsg(chatId, `🪪 Tu Chat ID es: \`${chatId}\`\n\nPásaselo al administrador para que te añada al bot.`);
+    return;
+  }
+
   if (LAUNDRY_CFG.allowed_chat_ids.length > 0 && !LAUNDRY_CFG.allowed_chat_ids.includes(String(chatId))) {
     await laundryMsg(chatId, '⛔ No tienes acceso a este bot. Contacta con el administrador.');
     return;
   }
 
   const session = getSession(chatId);
-  const t = text.trim();
 
   if (t === '/start' || t === '/inicio') {
     resetSession(chatId);
@@ -590,11 +596,6 @@ async function handleLaundryMessage(chatId, text, fromName) {
   if (t === '/cancelar' || t === '/cancel') {
     resetSession(chatId);
     await laundryMsg(chatId, '❌ Registro cancelado.');
-    return;
-  }
-
-  if (t === '/miid') {
-    await laundryMsg(chatId, `🪪 Tu Chat ID es: \`${chatId}\`\n\nPásaselo al administrador para que te añada al bot.`);
     return;
   }
 
