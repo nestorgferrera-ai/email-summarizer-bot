@@ -397,6 +397,43 @@ async function saveDailyEntry(responsable, data) {
   }
 }
 
+// ---- Google Sheets: desglose diario últimos 7 días ----
+async function getDailyBreakdown() {
+  if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: LAUNDRY_CFG.daily_sheet_id,
+      range: `${LAUNDRY_CFG.daily_sheet_tab}!A:M`,
+    });
+    const rows = response.data.values || [];
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const weekAgo = new Date(today); weekAgo.setDate(today.getDate() - 6);
+    const byDay = {};
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || !row[1]) continue;
+      const rowDate = parseSheetDate(row[1]);
+      if (!rowDate || rowDate < weekAgo || rowDate > today) continue;
+      const key = row[1]; // DD/MM/YYYY como clave
+      if (!byDay[key]) byDay[key] = { date: rowDate, totals: Object.fromEntries(ITEMS.map(i => [i.key, 0])), entries: 0 };
+      byDay[key].entries++;
+      ITEMS.forEach((item, idx) => {
+        const val = parseInt(row[ITEM_COL_START + idx], 10);
+        if (!isNaN(val)) byDay[key].totals[item.key] += val;
+      });
+    }
+    return byDay;
+  } catch (err) {
+    console.error('❌ Error leyendo desglose diario:', err.message);
+    return null;
+  }
+}
+
 // ---- Google Sheets: leer totales por período ----
 async function getTotalsForPeriod(startDate, endDate) {
   if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
@@ -576,6 +613,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
       `*Comandos disponibles:*\n` +
       `/nuevo — Registrar envío a la empresa de lavandería (no usar)\n` +
       `/diario — Registrar envío de ropa a Selava\n` +
+      `/semana — Ver desglose de envíos por día (última semana)\n` +
       `/resumen — Generar albarán de envíos por período\n` +
       `/cancelar — Cancelar registro en curso\n` +
       `/ayuda — Ver esta ayuda`);
@@ -587,6 +625,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
       `📖 *Ayuda — Bot de Lavandería*\n\n` +
       `/nuevo — Registrar envío a la empresa de lavandería (no usar)\n` +
       `/diario — Registrar envío diario de ropa a Selava\n` +
+      `/semana — Ver desglose de envíos por día (última semana)\n` +
       `/resumen — Generar albarán por período (Mar-Jue / Vie-Lun)\n` +
       `/cancelar — Cancelar el registro en curso\n\n` +
       `Escribe *0* si no hay unidades de algún artículo.`);
@@ -672,6 +711,29 @@ async function handleLaundryMessage(chatId, text, fromName) {
     }
 
     await laundryMsg(chatId, lines.join('\n'));
+    return;
+  }
+
+  if (t === '/semana') {
+    await laundryMsg(chatId, '⏳ Cargando datos de la última semana...');
+    const byDay = await getDailyBreakdown();
+    if (!byDay) {
+      await laundryMsg(chatId, '❌ No se pudo conectar con Google Sheets.');
+      return;
+    }
+    const days = Object.values(byDay).sort((a, b) => b.date - a.date);
+    if (days.length === 0) {
+      await laundryMsg(chatId, 'ℹ️ No hay registros de envíos en los últimos 7 días.');
+      return;
+    }
+    const lines = days.map(({ date, totals, entries }) => {
+      const dateStr = formatDate(date);
+      const total = ITEMS.reduce((s, item) => s + (totals[item.key] || 0), 0);
+      const detalle = ITEMS.filter(item => totals[item.key] > 0)
+        .map(item => `    • ${item.label}: ${totals[item.key]}`).join('\n');
+      return `📅 *${dateStr}* — ${entries} envío${entries !== 1 ? 's' : ''} — *${total} piezas*\n${detalle}`;
+    });
+    await laundryMsg(chatId, `📆 *Resumen últimos 7 días*\n\n${lines.join('\n\n')}`);
     return;
   }
 
