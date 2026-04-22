@@ -8,8 +8,10 @@
     "start:daily": "node daily-laundry-bot.js",
     "start:laundry": "node laundry-bot.js",
     "start:email": "node email-bot-server.js",
+    "start:drafts": "node email-analysis-drafts.js",
     "dev": "nodemon server.js",
-    "dev:daily": "nodemon daily-laundry-bot.js"
+    "dev:daily": "nodemon daily-laundry-bot.js",
+    "dev:drafts": "nodemon email-analysis-drafts.js"
   },
   "keywords": [
     "telegram",
@@ -22,6 +24,7 @@
   "author": "Nestor Garcia",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "axios": "^1.6.1",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
