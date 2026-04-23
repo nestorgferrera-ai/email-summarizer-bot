@@ -909,24 +909,6 @@ cron.schedule('0 16 * * 1', () => {
 console.log('✅ Cron diario: 15:00 UTC (07:00 Canarias)');
 console.log('✅ Cron semanal: lunes 16:00 UTC (08:00 Canarias)');
 
-// CRON — Carpeta IA cada 30 minutos
-cron.schedule('*/30 * * * *', async () => {
-  try {
-    const result = await processIAFolder();
-    if (result.count > 0 && EMAIL_CFG.telegram_token && EMAIL_CFG.telegram_chat_id) {
-      const lines = result.items.map(i => `• "${i.subject}"\n  De: ${i.from}`).join('\n');
-      await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
-        chat_id: EMAIL_CFG.telegram_chat_id,
-        text: `📁 *Carpeta IA — ${result.count} borrador(es) creado(s)*\n\n${lines}\n\nRevisa la carpeta Borradores.`,
-        parse_mode: 'Markdown',
-      }).catch(() => {});
-    }
-  } catch (err) {
-    console.error('❌ [IA cron]', err.message);
-  }
-});
-console.log('✅ Cron carpeta IA: cada 30 minutos');
-
 // ============================================================================
 // RUTAS EXPRESS
 // ============================================================================
