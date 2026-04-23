@@ -595,9 +595,146 @@ cron.schedule('0 8 * * *', () => {
 console.log('✅ Cron análisis correos: 08:00 UTC diario');
 
 // ============================================================================
+// CARPETA IA — Correos movidos manualmente por el usuario
+// ============================================================================
+
+async function findIAFolder(connection) {
+  try {
+    const boxes = await connection.getBoxes();
+    const inboxChildren = boxes.INBOX?.children || {};
+    if (inboxChildren.IA) { console.log('📁 Carpeta IA: INBOX.IA'); return 'INBOX.IA'; }
+    if (boxes.IA)          { console.log('📁 Carpeta IA: IA');       return 'IA'; }
+  } catch (_) {}
+  // Fallback: intentar abrir directamente
+  for (const name of ['INBOX.IA', 'IA']) {
+    try {
+      await connection.openBox(name, false);
+      console.log(`📁 Carpeta IA (fallback): ${name}`);
+      return name;
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function processIAFolder() {
+  console.log('\n' + '─'.repeat(65));
+  console.log('📁 [IA] Comprobando carpeta IA...');
+
+  let connection;
+  const created = [];
+
+  try {
+    connection = await withRetry(connectToIMAP);
+
+    // Buscar carpetas (sin cambiar el buzón seleccionado)
+    const draftsFolder = await findDraftsFolder(connection);
+    const iaFolder     = await findIAFolder(connection);
+
+    if (!iaFolder) {
+      console.log('⚠️  [IA] Carpeta IA no encontrada en el buzón — créala en tu cliente de correo');
+      return { count: 0, items: [] };
+    }
+
+    await connection.openBox(iaFolder, false);
+
+    const messages = await connection.search(
+      ['UNANSWERED'],
+      {
+        bodies: ['HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)', 'TEXT'],
+        struct: true,
+        markSeen: false,
+      }
+    );
+
+    if (messages.length === 0) {
+      console.log('📭 [IA] Sin correos pendientes');
+      return { count: 0, items: [] };
+    }
+
+    console.log(`📧 [IA] ${messages.length} correo(s) a procesar`);
+
+    for (const msg of messages) {
+      const uid = msg.attributes.uid;
+      try {
+        const headerPart = (msg.parts || []).find(p => p.which && p.which.startsWith('HEADER'));
+        const headers    = (headerPart && headerPart.body) ? headerPart.body : {};
+
+        const from      = (headers.from?.[0])          || 'Desconocido';
+        const subject   = (headers.subject?.[0])        || '(sin asunto)';
+        const dateStr   = (headers.date?.[0])           || '';
+        const messageId = (headers['message-id']?.[0])  || '';
+        const inReplyTo = (headers['in-reply-to']?.[0]) || '';
+        const references= (headers.references?.[0])     || '';
+        const date      = dateStr ? new Date(dateStr) : new Date();
+
+        let body = '';
+        try {
+          const parts = ImapSimple.getParts(msg.attributes.struct);
+          for (const part of parts) {
+            if (part.type !== 'text') continue;
+            const data = await connection.getPartData(msg, part);
+            const text = data.toString();
+            if (part.subtype === 'plain')            { body = text; break; }
+            else if (part.subtype === 'html' && !body) { body = stripHtml(text); }
+          }
+        } catch (_) { body = '(no se pudo obtener el cuerpo)'; }
+
+        const email = {
+          from, to: CONFIG.ionos_email, subject, date,
+          messageId, inReplyTo, references,
+          body: body.trim().substring(0, CONFIG.max_body_chars),
+        };
+
+        console.log(`  📨 "${subject}" — ${from}`);
+
+        const analysis = await analyzeEmailWithClaude(email);
+
+        // Siempre crear borrador: el usuario lo movió a IA explícitamente
+        const draftText = analysis.draft ||
+          `Estimado/a,\n\nHemos recibido su correo y nos ponemos en contacto con usted a la mayor brevedad.\n\nQuedamos a su disposición para cualquier consulta adicional.\n\nAtentamente,\nDirección\n${CONFIG.clinic_name}`;
+
+        const raw = await buildRawMime({
+          from:       CONFIG.ionos_email,
+          to:         from,
+          subject:    `Re: ${subject.replace(/^Re:\s*/i, '')}`,
+          text:       draftText,
+          inReplyTo:  messageId,
+          references: [references, messageId].filter(Boolean).join(' '),
+        });
+
+        await saveDraftToIMAP(connection, raw, draftsFolder, subject);
+
+        // Marcar como respondido para no reprocesar
+        await new Promise(resolve => {
+          connection.imap.uid.addFlags(uid, ['\\Answered'], err => {
+            if (err) console.log(`  ⚠️  No se pudo marcar UID ${uid}: ${err.message}`);
+            resolve();
+          });
+        });
+
+        created.push({ from, subject, priority: analysis.priority || 'normal' });
+        console.log(`  ✅ Borrador creado: "${subject}"`);
+
+        await new Promise(r => setTimeout(r, 300));
+
+      } catch (err) {
+        console.error(`  ❌ Error UID ${uid}: ${err.message}`);
+      }
+    }
+
+    return { count: created.length, items: created };
+
+  } finally {
+    if (connection) {
+      try { connection.end(); } catch (_) {}
+    }
+  }
+}
+
+// ============================================================================
 // EXPORTAR + ARRANCAR SI SE EJECUTA DIRECTAMENTE
 // ============================================================================
-module.exports = { runEmailAnalysisAndDrafts };
+module.exports = { runEmailAnalysisAndDrafts, processIAFolder };
 
 if (require.main === module) {
   runEmailAnalysisAndDrafts().catch(err => {

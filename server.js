@@ -13,7 +13,7 @@ const fs = require('fs');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
-const { runEmailAnalysisAndDrafts } = require('./email-analysis-drafts');
+const { runEmailAnalysisAndDrafts, processIAFolder } = require('./email-analysis-drafts');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -909,6 +909,24 @@ cron.schedule('0 16 * * 1', () => {
 console.log('✅ Cron diario: 15:00 UTC (07:00 Canarias)');
 console.log('✅ Cron semanal: lunes 16:00 UTC (08:00 Canarias)');
 
+// CRON — Carpeta IA cada 30 minutos
+cron.schedule('*/30 * * * *', async () => {
+  try {
+    const result = await processIAFolder();
+    if (result.count > 0 && EMAIL_CFG.telegram_token && EMAIL_CFG.telegram_chat_id) {
+      const lines = result.items.map(i => `• "${i.subject}"\n  De: ${i.from}`).join('\n');
+      await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+        chat_id: EMAIL_CFG.telegram_chat_id,
+        text: `📁 *Carpeta IA — ${result.count} borrador(es) creado(s)*\n\n${lines}\n\nRevisa la carpeta Borradores.`,
+        parse_mode: 'Markdown',
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.error('❌ [IA cron]', err.message);
+  }
+});
+console.log('✅ Cron carpeta IA: cada 30 minutos');
+
 // ============================================================================
 // RUTAS EXPRESS
 // ============================================================================
@@ -950,10 +968,28 @@ app.post('/email-webhook', async (req, res) => {
         chat_id: chatId,
         text: `❌ Error en análisis de borradores: ${err.message}`,
       }).catch(() => {}));
+  } else if (text === '/ia') {
+    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+      chat_id: chatId,
+      text: '📁 Comprobando carpeta IA...',
+    }).catch(() => {});
+    processIAFolder()
+      .then(result => {
+        const msg = result.count > 0
+          ? `✅ ${result.count} borrador(es) creado(s) desde la carpeta IA.\nRevisa la carpeta Borradores.`
+          : '📭 No hay correos pendientes en la carpeta IA.';
+        return axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+          chat_id: chatId, text: msg,
+        }).catch(() => {});
+      })
+      .catch(err => axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+        chat_id: chatId,
+        text: `❌ Error carpeta IA: ${err.message}`,
+      }).catch(() => {}));
   } else if (text === '/ayuda') {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
       chat_id: chatId,
-      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ayuda — Esta ayuda',
+      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda',
       parse_mode: 'Markdown',
     }).catch(() => {});
   }
