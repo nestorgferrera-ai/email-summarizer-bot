@@ -13,6 +13,8 @@ const fs = require('fs');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
+const { runEmailAnalysisAndDrafts } = require('./email-analysis-drafts');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.json());
@@ -934,10 +936,24 @@ app.post('/email-webhook', async (req, res) => {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`,
       { chat_id: chatId, text: '⏳ Generando resumen semanal...' }).catch(() => {});
     await sendWeeklyEmailSummary();
+  } else if (text === '/borradores') {
+    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+      chat_id: chatId,
+      text: '🤖 Analizando correos del día anterior y creando borradores...\nEsto puede tardar unos minutos. Recibirás un email con el resumen cuando termine.',
+    }).catch(() => {});
+    runEmailAnalysisAndDrafts()
+      .then(() => axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+        chat_id: chatId,
+        text: '✅ Análisis completado. Revisa tu bandeja de borradores y el resumen en tu email.',
+      }).catch(() => {}))
+      .catch(err => axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+        chat_id: chatId,
+        text: `❌ Error en análisis de borradores: ${err.message}`,
+      }).catch(() => {}));
   } else if (text === '/ayuda') {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
       chat_id: chatId,
-      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/ayuda — Esta ayuda',
+      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ayuda — Esta ayuda',
       parse_mode: 'Markdown',
     }).catch(() => {});
   }
