@@ -589,15 +589,26 @@ async function runEmailAnalysisAndDrafts() {
 // CARPETA IA — Correos movidos manualmente por el usuario
 // ============================================================================
 
+// Busca 'IA' recursivamente usando el delimiter real del servidor IMAP
+function findBoxPath(boxes, targetName, prefix) {
+  for (const [name, box] of Object.entries(boxes || {})) {
+    const sep      = box.delimiter || '.';
+    const fullPath = prefix ? `${prefix}${sep}${name}` : name;
+    if (name === targetName) return fullPath;
+    const child = findBoxPath(box.children, targetName, fullPath);
+    if (child) return child;
+  }
+  return null;
+}
+
 async function findIAFolder(connection) {
   try {
     const boxes = await connection.getBoxes();
-    const inboxChildren = boxes.INBOX?.children || {};
-    if (inboxChildren.IA) { console.log('📁 Carpeta IA: INBOX.IA'); return 'INBOX.IA'; }
-    if (boxes.IA)          { console.log('📁 Carpeta IA: IA');       return 'IA'; }
+    const found  = findBoxPath(boxes, 'IA', '');
+    if (found) { console.log(`📁 Carpeta IA: ${found}`); return found; }
   } catch (_) {}
-  // Fallback: intentar abrir directamente
-  for (const name of ['INBOX.IA', 'IA']) {
+  // Fallback: probar rutas habituales directamente
+  for (const name of ['INBOX.IA', 'INBOX/IA', 'IA']) {
     try {
       await connection.openBox(name, false);
       console.log(`📁 Carpeta IA (fallback): ${name}`);
