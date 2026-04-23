@@ -10,6 +10,9 @@ const { simpleParser } = require('mailparser');
 const axios = require('axios');
 require('dotenv').config();
 
+// Módulo de análisis de correos y borradores (arranca su propio cron al importarse)
+const { runEmailAnalysisAndDrafts } = require('./email-analysis-drafts');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -414,10 +417,24 @@ app.post('/telegram-webhook', async (req, res) => {
       text: '⏳ Generando resumen semanal, un momento...'
     }).catch(() => {});
     await sendWeeklyEmailSummary();
+  } else if (text === '/borradores') {
+    await axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
+      chat_id: chatId,
+      text: '🤖 Analizando correos del día anterior y creando borradores...\nEsto puede tardar unos minutos. Recibirás un email con el resumen cuando termine.'
+    }).catch(() => {});
+    runEmailAnalysisAndDrafts()
+      .then(() => axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
+        chat_id: chatId,
+        text: '✅ Análisis completado. Revisa tu bandeja de entrada y la carpeta Borradores de tu correo.'
+      }).catch(() => {}))
+      .catch(err => axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
+        chat_id: chatId,
+        text: `❌ Error durante el análisis: ${err.message}`
+      }).catch(() => {}));
   } else if (text === '/ayuda') {
     await axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
       chat_id: chatId,
-      text: '📋 *Comandos disponibles:*\n\n/resumen — Resumen de los últimos correos\n/semanal — Resumen de los últimos 7 días\n/ayuda — Ver esta ayuda',
+      text: '📋 *Comandos disponibles:*\n\n/resumen — Resumen de los últimos correos\n/semanal — Resumen de los últimos 7 días\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ayuda — Ver esta ayuda',
       parse_mode: 'Markdown'
     }).catch(() => {});
   }
@@ -431,6 +448,12 @@ app.post('/trigger', async (req, res) => {
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
+});
+
+app.post('/trigger-borradores', async (req, res) => {
+  console.log('🤖 Trigger borradores ejecutado');
+  res.json({ status: 'started', message: 'Análisis iniciado, revisa el email de resumen cuando termine' });
+  runEmailAnalysisAndDrafts().catch(err => console.error('❌ Error borradores:', err.message));
 });
 
 app.post('/trigger-test', async (req, res) => {
