@@ -414,6 +414,10 @@ async function saveDraftToIMAP(connection, rawMime, draftsFolder, subject) {
 // ENVIAR RESUMEN POR EMAIL AL BUZÓN PROPIO
 // ============================================================================
 async function sendSummaryEmail(replied, notReplied) {
+  if (!CONFIG.summary_to) {
+    console.log('⚠️  SUMMARY_RECIPIENT / IONOS_EMAIL no configurado — omitiendo email de resumen');
+    return;
+  }
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const dateStr = yesterday.toLocaleDateString('es-ES', {
@@ -494,7 +498,11 @@ async function sendSummaryEmail(replied, notReplied) {
 async function runEmailAnalysisAndDrafts() {
   console.log('\n' + '='.repeat(65));
   console.log('🤖 Análisis de correos y creación de borradores');
-  console.log('   Modelo: ' + CONFIG.model);
+  console.log('   Modelo:   ' + CONFIG.model);
+  console.log('   IMAP:     ' + CONFIG.imap_host + ':' + CONFIG.imap_port);
+  console.log('   SMTP:     ' + CONFIG.smtp_host + ':' + CONFIG.smtp_port);
+  console.log('   Email:    ' + (CONFIG.ionos_email || '⚠️  NO CONFIGURADO'));
+  console.log('   Resumen→: ' + (CONFIG.summary_to  || '⚠️  NO CONFIGURADO'));
   console.log('='.repeat(65));
 
   let connection;
