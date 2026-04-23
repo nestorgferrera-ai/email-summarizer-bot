@@ -584,15 +584,6 @@ async function runEmailAnalysisAndDrafts() {
   }
 }
 
-// ============================================================================
-// CRON: cada día a las 08:00 UTC (09:00 Peninsula / 08:00 Canarias en invierno)
-// ============================================================================
-cron.schedule('0 8 * * *', () => {
-  console.log('⏰ [' + new Date().toISOString() + '] Ejecutando análisis diario...');
-  runEmailAnalysisAndDrafts().catch(err => console.error('❌ Error en cron:', err.message));
-});
-
-console.log('✅ Cron análisis correos: 08:00 UTC diario');
 
 // ============================================================================
 // CARPETA IA — Correos movidos manualmente por el usuario
