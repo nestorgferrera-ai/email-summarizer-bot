@@ -274,15 +274,19 @@ async function fetchYesterdayEmails(connection) {
 
   for (const msg of messages) {
     try {
-      const headers = msg.headers || {};
-      const from      = (headers.from?.[0])         || 'Desconocido';
-      const to        = (headers.to?.[0])            || CONFIG.ionos_email;
-      const subject   = (headers.subject?.[0])       || '(sin asunto)';
-      const dateStr   = (headers.date?.[0])          || '';
-      const messageId = (headers['message-id']?.[0]) || '';
-      const inReplyTo = (headers['in-reply-to']?.[0]) || '';
-      const references= (headers.references?.[0])    || '';
+      // imap-simple expone los headers en msg.parts, no en msg.headers
+      const headerPart = (msg.parts || []).find(p => p.which && p.which.startsWith('HEADER'));
+      const headers = (headerPart && headerPart.body) ? headerPart.body : {};
 
+      const from      = (headers.from?.[0])           || 'Desconocido';
+      const to        = (headers.to?.[0])              || CONFIG.ionos_email;
+      const subject   = (headers.subject?.[0])         || '(sin asunto)';
+      const dateStr   = (headers.date?.[0])            || '';
+      const messageId = (headers['message-id']?.[0])   || '';
+      const inReplyTo = (headers['in-reply-to']?.[0])  || '';
+      const references= (headers.references?.[0])      || '';
+
+      console.log(`  → De: ${from} | Asunto: ${subject}`);
       const date = dateStr ? new Date(dateStr) : new Date();
 
       // Obtener cuerpo del texto
@@ -465,16 +469,19 @@ async function sendSummaryEmail(replied, notReplied) {
   lines.push(`Generado automáticamente · ${CONFIG.clinic_name}`);
 
   const transport = nodemailer.createTransport({
-    host:   CONFIG.smtp_host,
-    port:   CONFIG.smtp_port,
-    secure: false,
-    auth:   { user: CONFIG.ionos_email, pass: CONFIG.ionos_pass },
+    host:       CONFIG.smtp_host,
+    port:       CONFIG.smtp_port,
+    secure:     false,
+    requireTLS: true,
+    auth:       { user: CONFIG.ionos_email, pass: CONFIG.ionos_pass },
+    tls:        { rejectUnauthorized: false },
   });
 
+  console.log(`📤 Enviando resumen a ${CONFIG.summary_to} via ${CONFIG.smtp_host}:${CONFIG.smtp_port}...`);
   await transport.sendMail({
     from:    CONFIG.ionos_email,
     to:      CONFIG.summary_to,
-    subject: `📊 Resumen correos ${yesterday.toLocaleDateString('es-ES')} — ${replied.length} borradores creados`,
+    subject: `Resumen correos ${yesterday.toLocaleDateString('es-ES')} — ${replied.length} borradores creados`,
     text:    lines.join('\n'),
   });
 
