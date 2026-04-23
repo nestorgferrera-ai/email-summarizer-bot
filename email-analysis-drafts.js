@@ -28,7 +28,8 @@ const CONFIG = {
   smtp_host:     process.env.IONOS_SMTP_HOST || 'smtp.ionos.es',
   smtp_port:     parseInt(process.env.IONOS_SMTP_PORT || '587'),
   clinic_name:   process.env.CLINIC_NAME || 'Clínica Bandama',
-  summary_to:    process.env.SUMMARY_RECIPIENT || process.env.IONOS_EMAIL,
+  summary_to:    (process.env.SUMMARY_RECIPIENT || process.env.IONOS_EMAIL || '')
+                   .split(',').map(s => s.trim()).filter(Boolean),
   model:         process.env.CLAUDE_MODEL_DRAFTS || 'claude-opus-4-7',
   max_body_chars: 3000,
 };
@@ -414,7 +415,7 @@ async function saveDraftToIMAP(connection, rawMime, draftsFolder, subject) {
 // ENVIAR RESUMEN POR EMAIL AL BUZÓN PROPIO
 // ============================================================================
 async function sendSummaryEmail(replied, notReplied) {
-  if (!CONFIG.summary_to) {
+  if (!CONFIG.summary_to.length) {
     console.log('⚠️  SUMMARY_RECIPIENT / IONOS_EMAIL no configurado — omitiendo email de resumen');
     return;
   }
@@ -481,15 +482,16 @@ async function sendSummaryEmail(replied, notReplied) {
     tls:        { rejectUnauthorized: false },
   });
 
-  console.log(`📤 Enviando resumen a ${CONFIG.summary_to} via ${CONFIG.smtp_host}:${CONFIG.smtp_port}...`);
+  const toList = CONFIG.summary_to.join(', ');
+  console.log(`📤 Enviando resumen a ${toList} via ${CONFIG.smtp_host}:${CONFIG.smtp_port}...`);
   await transport.sendMail({
     from:    CONFIG.ionos_email,
-    to:      CONFIG.summary_to,
+    to:      toList,
     subject: `Resumen correos ${yesterday.toLocaleDateString('es-ES')} — ${replied.length} borradores creados`,
     text:    lines.join('\n'),
   });
 
-  console.log('✅ Email de resumen enviado a', CONFIG.summary_to);
+  console.log('✅ Email de resumen enviado a', toList);
 }
 
 // ============================================================================
@@ -502,7 +504,7 @@ async function runEmailAnalysisAndDrafts() {
   console.log('   IMAP:     ' + CONFIG.imap_host + ':' + CONFIG.imap_port);
   console.log('   SMTP:     ' + CONFIG.smtp_host + ':' + CONFIG.smtp_port);
   console.log('   Email:    ' + (CONFIG.ionos_email || '⚠️  NO CONFIGURADO'));
-  console.log('   Resumen→: ' + (CONFIG.summary_to  || '⚠️  NO CONFIGURADO'));
+  console.log('   Resumen→: ' + (CONFIG.summary_to.length ? CONFIG.summary_to.join(', ') : '⚠️  NO CONFIGURADO'));
   console.log('='.repeat(65));
 
   let connection;
