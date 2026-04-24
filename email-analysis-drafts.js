@@ -109,22 +109,24 @@ BAJA:
 
 === DIRECTRICES PARA REDACTAR BORRADORES ===
 
-1. Empieza con "Estimado/a [nombre si aparece en el correo, o Sr./Sra. como genérico],"
-   o "Estimados Sres. [nombre de empresa]," para personas jurídicas.
-2. Sé profesional y cordial; refleja la imagen de una clínica médica de calidad.
-3. Responde directamente a lo que pregunta o solicita el remitente.
-4. Si no hay información suficiente para responder, indica que se está gestionando
+1. SALUDO: usa ÚNICAMENTE el nombre del remitente seguido de coma, por ejemplo "Juan," o "Mapfre,".
+   NUNCA uses "Estimado", "Estimada", "Estimados", "Sr.", "Sra." ni ninguna fórmula de cortesía antes del nombre.
+   Si no aparece ningún nombre en el correo, omite el saludo por completo.
+2. PIE DE FIRMA: NO incluyas ningún cierre ni firma al final. Nada de "Atentamente", "Un saludo",
+   "Quedamos a su disposición", "Dirección", ni el nombre de la clínica. El borrador termina
+   en la última frase del cuerpo del mensaje.
+3. Sé profesional y cordial; refleja la imagen de una clínica médica de calidad.
+4. Responde directamente a lo que pregunta o solicita el remitente.
+5. Si no hay información suficiente para responder, indica que se está gestionando
    y que se dará respuesta en breve, sin inventar datos.
-5. Para aseguradoras: usa terminología médico-administrativa; menciona el expediente
+6. Para aseguradoras: usa terminología médico-administrativa; menciona el expediente
    o número de referencia si aparece en el correo original.
-6. Para pacientes: usa un lenguaje claro, empático y accesible.
-7. Para proveedores: sé directo y específico sobre los requerimientos o la decisión.
-8. Para organismos oficiales: usa registro formal y menciona plazos si los hay.
-9. Termina siempre con: "Quedamos a su disposición para cualquier consulta adicional."
-10. Firma como: "Atentamente,\nDirección\n${CONFIG.clinic_name}"
-11. NO uses tuteo. NO uses marcadores de posición como [INSERTAR DATO] salvo que
+7. Para pacientes: usa un lenguaje claro, empático y accesible.
+8. Para proveedores: sé directo y específico sobre los requerimientos o la decisión.
+9. Para organismos oficiales: usa registro formal y menciona plazos si los hay.
+10. NO uses tuteo. NO uses marcadores de posición como [INSERTAR DATO] salvo que
     sea genuinamente necesario para completar el borrador.
-12. El borrador debe estar listo para enviar con mínimas correcciones.
+11. El borrador debe estar listo para enviar con mínimas correcciones.
 
 === CONSIDERACIONES ESPECIALES ===
 
@@ -693,7 +695,7 @@ async function processIAFolder() {
 
         // Siempre crear borrador: el usuario lo movió a IA explícitamente
         const draftText = analysis.draft ||
-          `Estimado/a,\n\nHemos recibido su correo y nos ponemos en contacto con usted a la mayor brevedad.\n\nQuedamos a su disposición para cualquier consulta adicional.\n\nAtentamente,\nDirección\n${CONFIG.clinic_name}`;
+          `Hemos recibido su correo y nos ponemos en contacto con usted a la mayor brevedad.`;
 
         const raw = await buildRawMime({
           from:       CONFIG.ionos_email,
