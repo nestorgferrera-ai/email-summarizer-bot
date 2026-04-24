@@ -327,10 +327,12 @@ async function fetchYesterdayEmails(connection) {
 // ============================================================================
 // ANALIZAR CORREO CON CLAUDE (con prompt caching en el system prompt)
 // ============================================================================
-async function analyzeEmailWithClaude(email) {
+async function analyzeEmailWithClaude(email, forceReply = false) {
   const userContent = [
     `Analiza el siguiente correo recibido en ${CONFIG.clinic_name}.`,
-    `Responde ÚNICAMENTE con el objeto JSON indicado en las instrucciones.`,
+    forceReply
+      ? `IMPORTANTE: El usuario ha movido este correo explícitamente a la carpeta IA para que se redacte una respuesta. SIEMPRE genera un borrador completo en el campo "draft", independientemente de si consideras que necesita respuesta o no.`
+      : `Responde ÚNICAMENTE con el objeto JSON indicado en las instrucciones.`,
     ``,
     `DE: ${email.from}`,
     `PARA: ${email.to}`,
@@ -693,7 +695,7 @@ async function processIAFolder() {
 
         console.log(`  📨 "${subject}" — ${from}`);
 
-        const analysis = await analyzeEmailWithClaude(email);
+        const analysis = await analyzeEmailWithClaude(email, true);
 
         // Siempre crear borrador: el usuario lo movió a IA explícitamente
         const draftText = analysis.draft ||
