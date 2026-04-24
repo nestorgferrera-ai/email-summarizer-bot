@@ -109,9 +109,11 @@ BAJA:
 
 === DIRECTRICES PARA REDACTAR BORRADORES ===
 
-1. SALUDO: usa ÚNICAMENTE el nombre del remitente seguido de coma, por ejemplo "Juan," o "Mapfre,".
+1. SALUDO: empieza el borrador con el nombre del remitente seguido de coma, por ejemplo "Sandra," o "Mapfre,".
+   Extrae el nombre del campo DE: del encabezado (la parte antes de <email@dominio>).
+   Si el campo DE: solo tiene dirección de email sin nombre, busca la firma en el cuerpo del correo.
    NUNCA uses "Estimado", "Estimada", "Estimados", "Sr.", "Sra." ni ninguna fórmula de cortesía antes del nombre.
-   Si no aparece ningún nombre en el correo, omite el saludo por completo.
+   Solo si es imposible determinar ningún nombre, omite el saludo por completo.
 2. PIE DE FIRMA: NO incluyas ningún cierre ni firma al final. Nada de "Atentamente", "Un saludo",
    "Quedamos a su disposición", "Dirección", ni el nombre de la clínica. El borrador termina
    en la última frase del cuerpo del mensaje.
