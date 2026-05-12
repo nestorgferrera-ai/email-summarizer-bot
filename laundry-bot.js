@@ -164,7 +164,12 @@ async function registerCommands() {
       { commands },
       { timeout: 10000 }
     );
-    console.log('✅ Comandos del menú registrados en Telegram');
+    await axios.post(
+      `https://api.telegram.org/bot${CONFIG.telegram_token}/setChatMenuButton`,
+      { menu_button: { type: 'commands' } },
+      { timeout: 10000 }
+    );
+    console.log('✅ Comandos y botón Menú registrados en Telegram');
   } catch (err) {
     console.error('❌ Error registrando comandos:', err.message);
   }
