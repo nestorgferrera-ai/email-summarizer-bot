@@ -664,6 +664,15 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+app.post('/set-menu', async (req, res) => {
+  try {
+    await registerCommands();
+    res.json({ status: 'ok', message: 'Comandos y botón Menú registrados en Telegram' });
+  } catch (err) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
 app.post('/trigger-test', async (req, res) => {
   const testChatId = req.body?.chat_id;
   if (!testChatId) return res.status(400).json({ error: 'Proporciona chat_id en el body' });
