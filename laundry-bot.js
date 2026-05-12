@@ -147,6 +147,30 @@ async function sendMessage(chatId, text, extra = {}) {
 }
 
 // ============================================================================
+// TELEGRAM: REGISTRAR COMANDOS (menú botón "/" en la barra de escritura)
+// ============================================================================
+async function registerCommands() {
+  if (!CONFIG.telegram_token) return;
+  const commands = [
+    { command: 'nuevo',    description: 'Registrar recepción de ropa de Selava' },
+    { command: 'diario',   description: 'Registrar envío diario a Selava' },
+    { command: 'resumen',  description: 'Generar albarán de envíos por período' },
+    { command: 'cancelar', description: 'Cancelar el registro en curso' },
+    { command: 'ayuda',    description: 'Ver comandos disponibles' },
+  ];
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${CONFIG.telegram_token}/setMyCommands`,
+      { commands },
+      { timeout: 10000 }
+    );
+    console.log('✅ Comandos del menú registrados en Telegram');
+  } catch (err) {
+    console.error('❌ Error registrando comandos:', err.message);
+  }
+}
+
+// ============================================================================
 // TELEGRAM: REGISTRAR WEBHOOK
 // ============================================================================
 async function registerWebhook() {
@@ -654,6 +678,7 @@ app.listen(PORT, async () => {
   console.log(`📋 Envíos diarios      → ${CONFIG.daily_sheet_id} / "${CONFIG.daily_sheet_tab}"`);
   console.log(`📋 Resumen períodos    → ${CONFIG.resumen_sheet_id} / "${CONFIG.resumen_sheet_tab}"\n`);
   await registerWebhook();
+  await registerCommands();
 });
 
 process.on('unhandledRejection', (reason) => {
