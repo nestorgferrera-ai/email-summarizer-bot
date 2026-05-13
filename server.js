@@ -199,19 +199,40 @@ Formato:
   });
 }
 
+function splitTelegramMessage(text, limit = 4000) {
+  if (text.length <= limit) return [text];
+  const chunks = [];
+  const lines = text.split('\n');
+  let current = '';
+  for (const line of lines) {
+    if ((current + '\n' + line).length > limit) {
+      if (current) chunks.push(current.trim());
+      current = line;
+    } else {
+      current = current ? current + '\n' + line : line;
+    }
+  }
+  if (current) chunks.push(current.trim());
+  return chunks;
+}
+
 async function sendEmailTelegram(message, chatId = null) {
   const now = new Date();
   const dateStr = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const fullMessage = `📋 *Resumen de correos - ${dateStr}*\n\n${message}`;
+  const chunks = splitTelegramMessage(fullMessage);
+  const target = chatId || EMAIL_CFG.telegram_chat_id;
 
-  return withRetry(async () => {
-    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
-      chat_id: chatId || EMAIL_CFG.telegram_chat_id,
-      text: fullMessage,
-      parse_mode: 'Markdown',
-    }, { timeout: 15000 });
-    console.log('✅ Resumen de email enviado por Telegram');
-  });
+  for (const chunk of chunks) {
+    await withRetry(async () => {
+      await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+        chat_id: target,
+        text: chunk,
+        parse_mode: 'Markdown',
+      }, { timeout: 15000 });
+    });
+  }
+  console.log(`✅ Resumen de email enviado por Telegram (${chunks.length} mensaje${chunks.length > 1 ? 's' : ''})`);
 }
 
 async function sendDailyEmailSummary(chatId = null) {
