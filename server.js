@@ -167,21 +167,25 @@ async function summarizeWithClaude(emails, tipo = 'diario') {
 
 ${instrucciones}
 
+Los correos están numerados del 1 al ${emails.length}, siendo el 1 el más reciente.
+
 ${emailsText}
 
 Crea un resumen ejecutivo en español que:
 1. Agrupe los correos por TEMA/PRIORIDAD (urgentes primero)
 2. Destaque asuntos críticos: pacientes, facturación, seguros, recursos humanos
-3. Sea MUY CONCISO (máximo ${tipo === 'semanal' ? '1200' : '800'} caracteres)
+3. Sea MUY CONCISO (máximo ${tipo === 'semanal' ? '1500' : '1000'} caracteres)
 4. Usa emojis para mayor claridad
 5. Incluye recomendaciones de acciones inmediatas si las hay
+6. IMPORTANTE: cada punto debe llevar entre corchetes el número del correo tal como aparece en la lista — ejemplo [3]. Todos los correos sin excepción deben aparecer numerados.
 
 Formato:
 🚨 URGENTE
-• [Asunto]: Descripción breve
+• [1] Asunto: Descripción breve
+• [4] Asunto: Descripción breve
 
 📊 ADMINISTRATIVO
-• [Asunto]: Descripción breve
+• [2] Asunto: Descripción breve
 
 ⏭️ PRÓXIMOS PASOS
 - Acción 1`;
