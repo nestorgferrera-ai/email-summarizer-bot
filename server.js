@@ -167,21 +167,25 @@ async function summarizeWithClaude(emails, tipo = 'diario') {
 
 ${instrucciones}
 
+Los correos están numerados del 1 al ${emails.length}, siendo el 1 el más reciente.
+
 ${emailsText}
 
 Crea un resumen ejecutivo en español que:
 1. Agrupe los correos por TEMA/PRIORIDAD (urgentes primero)
 2. Destaque asuntos críticos: pacientes, facturación, seguros, recursos humanos
-3. Sea MUY CONCISO (máximo ${tipo === 'semanal' ? '1200' : '800'} caracteres)
+3. Sea MUY CONCISO (máximo ${tipo === 'semanal' ? '1500' : '1000'} caracteres)
 4. Usa emojis para mayor claridad
 5. Incluye recomendaciones de acciones inmediatas si las hay
+6. IMPORTANTE: cada punto debe llevar entre corchetes el número del correo tal como aparece en la lista — ejemplo [3]. Todos los correos sin excepción deben aparecer numerados.
 
 Formato:
 🚨 URGENTE
-• [Asunto]: Descripción breve
+• [1] Asunto: Descripción breve
+• [4] Asunto: Descripción breve
 
 📊 ADMINISTRATIVO
-• [Asunto]: Descripción breve
+• [2] Asunto: Descripción breve
 
 ⏭️ PRÓXIMOS PASOS
 - Acción 1`;
@@ -199,19 +203,40 @@ Formato:
   });
 }
 
+function splitTelegramMessage(text, limit = 4000) {
+  if (text.length <= limit) return [text];
+  const chunks = [];
+  const lines = text.split('\n');
+  let current = '';
+  for (const line of lines) {
+    if ((current + '\n' + line).length > limit) {
+      if (current) chunks.push(current.trim());
+      current = line;
+    } else {
+      current = current ? current + '\n' + line : line;
+    }
+  }
+  if (current) chunks.push(current.trim());
+  return chunks;
+}
+
 async function sendEmailTelegram(message, chatId = null) {
   const now = new Date();
   const dateStr = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const fullMessage = `📋 *Resumen de correos - ${dateStr}*\n\n${message}`;
+  const chunks = splitTelegramMessage(fullMessage);
+  const target = chatId || EMAIL_CFG.telegram_chat_id;
 
-  return withRetry(async () => {
-    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
-      chat_id: chatId || EMAIL_CFG.telegram_chat_id,
-      text: fullMessage,
-      parse_mode: 'Markdown',
-    }, { timeout: 15000 });
-    console.log('✅ Resumen de email enviado por Telegram');
-  });
+  for (const chunk of chunks) {
+    await withRetry(async () => {
+      await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+        chat_id: target,
+        text: chunk,
+        parse_mode: 'Markdown',
+      }, { timeout: 15000 });
+    });
+  }
+  console.log(`✅ Resumen de email enviado por Telegram (${chunks.length} mensaje${chunks.length > 1 ? 's' : ''})`);
 }
 
 async function sendDailyEmailSummary(chatId = null) {
