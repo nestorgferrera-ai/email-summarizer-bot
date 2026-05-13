@@ -874,6 +874,32 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
   }
 }
 
+async function registerLaundryCommands() {
+  if (!LAUNDRY_CFG.telegram_token) return;
+  const commands = [
+    { command: 'diario',   description: 'Registrar envío diario a Selava' },
+    { command: 'semana',   description: 'Ver desglose de envíos (última semana)' },
+    { command: 'resumen',  description: 'Generar albarán de envíos por período' },
+    { command: 'cancelar', description: 'Cancelar el registro en curso' },
+    { command: 'ayuda',    description: 'Ver comandos disponibles' },
+  ];
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${LAUNDRY_CFG.telegram_token}/setMyCommands`,
+      { commands },
+      { timeout: 10000 }
+    );
+    await axios.post(
+      `https://api.telegram.org/bot${LAUNDRY_CFG.telegram_token}/setChatMenuButton`,
+      { menu_button: { type: 'commands' } },
+      { timeout: 10000 }
+    );
+    console.log('✅ Comandos y botón Menú registrados — Bot Lavandería');
+  } catch (err) {
+    console.error('❌ Error registrando comandos lavandería:', err.message);
+  }
+}
+
 // ============================================================================
 // WEBHOOKS DE TELEGRAM
 // ============================================================================
@@ -991,6 +1017,15 @@ app.post('/laundry-webhook', async (req, res) => {
   }
 });
 
+app.post('/set-menu', async (req, res) => {
+  try {
+    await registerLaundryCommands();
+    res.json({ status: 'ok', message: 'Comandos y botón Menú registrados en Telegram' });
+  } catch (err) {
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
 // Triggers manuales
 app.post('/trigger', async (req, res) => {
   try { await sendDailyEmailSummary(); res.json({ status: 'ok', message: 'Resumen email enviado' }); }
@@ -1011,6 +1046,7 @@ app.listen(PORT, async () => {
   console.log('   📧 Email Summarizer Bot');
   console.log('   🧺 Laundry Bot — Albaranes Selava\n');
   await registerWebhooks();
+  await registerLaundryCommands();
 });
 
 process.on('unhandledRejection', (reason) => console.error('❌ Promesa rechazada:', reason));
