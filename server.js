@@ -43,7 +43,7 @@ const EMAIL_CFG = {
   ionos_imap_host:  process.env.IONOS_IMAP_HOST || 'imap.ionos.es',
   ionos_imap_port:  parseInt(process.env.IONOS_IMAP_PORT || '993'),
   ionos_smtp_host:  process.env.IONOS_SMTP_HOST || (process.env.IONOS_IMAP_HOST || 'imap.ionos.es').replace('imap.', 'smtp.'),
-  ionos_smtp_port:  parseInt(process.env.IONOS_SMTP_PORT || '587'),
+  ionos_smtp_port:  parseInt(process.env.IONOS_SMTP_PORT || '465'),
   telegram_token:   process.env.TELEGRAM_TOKEN,
   telegram_chat_id: process.env.TELEGRAM_CHAT_ID,
   claude_api_key:   process.env.CLAUDE_API_KEY,
@@ -519,11 +519,15 @@ async function ensureSheetTabExists(sheets, spreadsheetId, tabName) {
 async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCount) {
   if (!LAUNDRY_CFG.resumen_email_to.length || !EMAIL_CFG.ionos_email || !EMAIL_CFG.ionos_password) return false;
   try {
+    const smtpPort = EMAIL_CFG.ionos_smtp_port;
     const transporter = nodemailer.createTransport({
       host: EMAIL_CFG.ionos_smtp_host,
-      port: EMAIL_CFG.ionos_smtp_port,
-      secure: false,
+      port: smtpPort,
+      secure: smtpPort === 465,
       auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
+      connectionTimeout: 20000,
+      greetingTimeout: 15000,
+      socketTimeout: 30000,
     });
     const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
     const itemRows = ITEMS.map(item =>
