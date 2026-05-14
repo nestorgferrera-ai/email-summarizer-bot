@@ -11,7 +11,6 @@ const { google } = require('googleapis');
 const axios = require('axios');
 const fs = require('fs');
 const nodemailer = require('nodemailer');
-const { Resend } = require('resend');
 require('dotenv').config();
 
 const { runEmailAnalysisAndDrafts, processIAFolder } = require('./email-analysis-drafts');
@@ -47,7 +46,10 @@ const EMAIL_CFG = {
   ionos_smtp_port:  parseInt(process.env.IONOS_SMTP_PORT || '465'),
   gmail_user:       process.env.GMAIL_USER,
   gmail_app_pass:   process.env.GMAIL_APP_PASS,
-  resend_api_key:   process.env.RESEND_API_KEY,
+  emailjs_service_id:  process.env.EMAILJS_SERVICE_ID,
+  emailjs_template_id: process.env.EMAILJS_TEMPLATE_ID,
+  emailjs_public_key:  process.env.EMAILJS_PUBLIC_KEY,
+  emailjs_private_key: process.env.EMAILJS_PRIVATE_KEY,
   telegram_token:   process.env.TELEGRAM_TOKEN,
   telegram_chat_id: process.env.TELEGRAM_CHAT_ID,
   claude_api_key:   process.env.CLAUDE_API_KEY,
@@ -548,18 +550,28 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
   const subject = `Albarán Envío Selava — ${periodLabel} (${formatDate(startDate)} → ${formatDate(endDate)})`;
   const to = LAUNDRY_CFG.resumen_email_to;
 
-  // Resend (HTTPS) — no usa puertos SMTP, funciona en cualquier plataforma
-  if (EMAIL_CFG.resend_api_key) {
+  // EmailJS (HTTPS) — no usa puertos SMTP, funciona en cualquier plataforma
+  if (EMAIL_CFG.emailjs_service_id && EMAIL_CFG.emailjs_template_id && EMAIL_CFG.emailjs_public_key) {
     try {
-      const resend = new Resend(EMAIL_CFG.resend_api_key);
-      const fromAddress = EMAIL_CFG.gmail_user
-        ? `Bot Lavandería <${EMAIL_CFG.gmail_user}>`
-        : 'Bot Lavandería <onboarding@resend.dev>';
-      await resend.emails.send({ from: fromAddress, to, subject, html });
-      console.log(`✅ Email resumen enviado (Resend) a: ${to.join(', ')}`);
+      await axios.post('https://api.emailjs.com/api/v1.0/email/send', {
+        service_id:  EMAIL_CFG.emailjs_service_id,
+        template_id: EMAIL_CFG.emailjs_template_id,
+        user_id:     EMAIL_CFG.emailjs_public_key,
+        accessToken: EMAIL_CFG.emailjs_private_key,
+        template_params: {
+          to_email:   to.join(', '),
+          subject,
+          html_content: html,
+          period:     periodLabel,
+          date_range: `${formatDate(startDate)} → ${formatDate(endDate)}`,
+          row_count:  String(rowCount),
+          grand_total: String(grandTotal),
+        },
+      }, { timeout: 15000 });
+      console.log(`✅ Email resumen enviado (EmailJS) a: ${to.join(', ')}`);
       return true;
     } catch (err) {
-      console.error('❌ Error enviando email resumen (Resend):', err.message);
+      console.error('❌ Error enviando email resumen (EmailJS):', err.response?.data || err.message);
       return false;
     }
   }
