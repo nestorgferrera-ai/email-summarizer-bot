@@ -547,7 +547,8 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
   </table>
   <p style="color:#888;font-size:12px;margin-top:16px">Generado automáticamente — Bot Lavandería Clínica Bandama</p>
 </div>`;
-  const subject = `Albarán Envío Selava — ${periodLabel} (${formatDate(startDate)} → ${formatDate(endDate)})`;
+  const fmtSubject = d => formatDate(d).replace(/\//g, '-');
+  const subject = `Albarán Envío Selava — ${periodLabel} (${fmtSubject(startDate)} → ${fmtSubject(endDate)})`;
   const to = LAUNDRY_CFG.resumen_email_to;
 
   // EmailJS (HTTPS) — no usa puertos SMTP, funciona en cualquier plataforma
