@@ -44,6 +44,8 @@ const EMAIL_CFG = {
   ionos_imap_port:  parseInt(process.env.IONOS_IMAP_PORT || '993'),
   ionos_smtp_host:  process.env.IONOS_SMTP_HOST || (process.env.IONOS_IMAP_HOST || 'imap.ionos.es').replace('imap.', 'smtp.'),
   ionos_smtp_port:  parseInt(process.env.IONOS_SMTP_PORT || '465'),
+  gmail_user:       process.env.GMAIL_USER,
+  gmail_app_pass:   process.env.GMAIL_APP_PASS,
   telegram_token:   process.env.TELEGRAM_TOKEN,
   telegram_chat_id: process.env.TELEGRAM_CHAT_ID,
   claude_api_key:   process.env.CLAUDE_API_KEY,
@@ -517,18 +519,26 @@ async function ensureSheetTabExists(sheets, spreadsheetId, tabName) {
 
 // ---- Email: enviar resumen de período ----
 async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCount) {
-  if (!LAUNDRY_CFG.resumen_email_to.length || !EMAIL_CFG.ionos_email || !EMAIL_CFG.ionos_password) return false;
+  if (!LAUNDRY_CFG.resumen_email_to.length) return false;
+  const useGmail = !!(EMAIL_CFG.gmail_user && EMAIL_CFG.gmail_app_pass);
+  const hasIonos  = !!(EMAIL_CFG.ionos_email && EMAIL_CFG.ionos_password);
+  if (!useGmail && !hasIonos) return false;
   try {
-    const smtpPort = EMAIL_CFG.ionos_smtp_port;
-    const transporter = nodemailer.createTransport({
-      host: EMAIL_CFG.ionos_smtp_host,
-      port: smtpPort,
-      secure: smtpPort === 465,
-      auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
-      connectionTimeout: 20000,
-      greetingTimeout: 15000,
-      socketTimeout: 30000,
-    });
+    const transporter = useGmail
+      ? nodemailer.createTransport({
+          service: 'gmail',
+          auth: { user: EMAIL_CFG.gmail_user, pass: EMAIL_CFG.gmail_app_pass },
+        })
+      : nodemailer.createTransport({
+          host: EMAIL_CFG.ionos_smtp_host,
+          port: EMAIL_CFG.ionos_smtp_port,
+          secure: EMAIL_CFG.ionos_smtp_port === 465,
+          auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
+          connectionTimeout: 20000,
+          greetingTimeout: 15000,
+          socketTimeout: 30000,
+        });
+    const fromAddress = useGmail ? EMAIL_CFG.gmail_user : EMAIL_CFG.ionos_email;
     const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
     const itemRows = ITEMS.map(item =>
       `<tr><td style="padding:4px 12px">${item.label}</td><td style="padding:4px 12px;text-align:right"><strong>${totals[item.key] || 0}</strong></td></tr>`
@@ -553,7 +563,7 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
   <p style="color:#888;font-size:12px;margin-top:16px">Generado automáticamente — Bot Lavandería Clínica Bandama</p>
 </div>`;
     await transporter.sendMail({
-      from: `"Bot Lavandería" <${EMAIL_CFG.ionos_email}>`,
+      from: `"Bot Lavandería" <${fromAddress}>`,
       to: LAUNDRY_CFG.resumen_email_to.join(', '),
       subject: `Albarán Envío Selava — ${periodLabel} (${formatDate(startDate)} → ${formatDate(endDate)})`,
       html,
