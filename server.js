@@ -526,7 +526,10 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
   try {
     const transporter = useGmail
       ? nodemailer.createTransport({
-          service: 'gmail',
+          host: 'smtp.gmail.com',
+          port: 587,
+          secure: false,
+          family: 4,
           auth: { user: EMAIL_CFG.gmail_user, pass: EMAIL_CFG.gmail_app_pass },
         })
       : nodemailer.createTransport({
