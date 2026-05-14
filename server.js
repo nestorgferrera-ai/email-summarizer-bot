@@ -42,6 +42,8 @@ const EMAIL_CFG = {
   ionos_password:   process.env.IONOS_PASSWORD,
   ionos_imap_host:  process.env.IONOS_IMAP_HOST || 'imap.ionos.es',
   ionos_imap_port:  parseInt(process.env.IONOS_IMAP_PORT || '993'),
+  ionos_smtp_host:  process.env.IONOS_SMTP_HOST || (process.env.IONOS_IMAP_HOST || 'imap.ionos.es').replace('imap.', 'smtp.'),
+  ionos_smtp_port:  parseInt(process.env.IONOS_SMTP_PORT || '587'),
   telegram_token:   process.env.TELEGRAM_TOKEN,
   telegram_chat_id: process.env.TELEGRAM_CHAT_ID,
   claude_api_key:   process.env.CLAUDE_API_KEY,
@@ -518,8 +520,8 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
   if (!LAUNDRY_CFG.resumen_email_to.length || !EMAIL_CFG.ionos_email || !EMAIL_CFG.ionos_password) return false;
   try {
     const transporter = nodemailer.createTransport({
-      host: EMAIL_CFG.ionos_imap_host.replace('imap.', 'smtp.'),
-      port: 587,
+      host: EMAIL_CFG.ionos_smtp_host,
+      port: EMAIL_CFG.ionos_smtp_port,
       secure: false,
       auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
     });
@@ -718,15 +720,15 @@ async function handleLaundryMessage(chatId, text, fromName) {
 
     // Email
     lines.push('');
-    lines.push(`📧 *SMTP host:* \`${EMAIL_CFG.ionos_imap_host.replace('imap.', 'smtp.')}\``);
+    lines.push(`📧 *SMTP host:* \`${EMAIL_CFG.ionos_smtp_host}\` (puerto ${EMAIL_CFG.ionos_smtp_port})`);
     lines.push(`👤 *SMTP usuario:* \`${EMAIL_CFG.ionos_email || '❌ NO CONFIGURADO'}\``);
     lines.push(`🔐 *SMTP contraseña:* ${EMAIL_CFG.ionos_password ? '✅ Configurada' : '❌ NO CONFIGURADA'}`);
     lines.push(`📬 *Destinatarios (RESUMEN_EMAIL_TO):* ${LAUNDRY_CFG.resumen_email_to.length ? LAUNDRY_CFG.resumen_email_to.map(e => `\`${e}\``).join(', ') : '❌ NO CONFIGURADO'}`);
     if (EMAIL_CFG.ionos_email && EMAIL_CFG.ionos_password) {
       try {
         const transporter = nodemailer.createTransport({
-          host: EMAIL_CFG.ionos_imap_host.replace('imap.', 'smtp.'),
-          port: 587,
+          host: EMAIL_CFG.ionos_smtp_host,
+          port: EMAIL_CFG.ionos_smtp_port,
           secure: false,
           auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
         });
