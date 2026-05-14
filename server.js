@@ -46,6 +46,10 @@ const EMAIL_CFG = {
   ionos_smtp_port:  parseInt(process.env.IONOS_SMTP_PORT || '465'),
   gmail_user:       process.env.GMAIL_USER,
   gmail_app_pass:   process.env.GMAIL_APP_PASS,
+  emailjs_service_id:  process.env.EMAILJS_SERVICE_ID,
+  emailjs_template_id: process.env.EMAILJS_TEMPLATE_ID,
+  emailjs_public_key:  process.env.EMAILJS_PUBLIC_KEY,
+  emailjs_private_key: process.env.EMAILJS_PRIVATE_KEY,
   telegram_token:   process.env.TELEGRAM_TOKEN,
   telegram_chat_id: process.env.TELEGRAM_CHAT_ID,
   claude_api_key:   process.env.CLAUDE_API_KEY,
@@ -520,33 +524,11 @@ async function ensureSheetTabExists(sheets, spreadsheetId, tabName) {
 // ---- Email: enviar resumen de período ----
 async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCount) {
   if (!LAUNDRY_CFG.resumen_email_to.length) return false;
-  const useGmail = !!(EMAIL_CFG.gmail_user && EMAIL_CFG.gmail_app_pass);
-  const hasIonos  = !!(EMAIL_CFG.ionos_email && EMAIL_CFG.ionos_password);
-  if (!useGmail && !hasIonos) return false;
-  try {
-    const transporter = useGmail
-      ? nodemailer.createTransport({
-          host: 'smtp.gmail.com',
-          port: 587,
-          secure: false,
-          family: 4,
-          auth: { user: EMAIL_CFG.gmail_user, pass: EMAIL_CFG.gmail_app_pass },
-        })
-      : nodemailer.createTransport({
-          host: EMAIL_CFG.ionos_smtp_host,
-          port: EMAIL_CFG.ionos_smtp_port,
-          secure: EMAIL_CFG.ionos_smtp_port === 465,
-          auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
-          connectionTimeout: 20000,
-          greetingTimeout: 15000,
-          socketTimeout: 30000,
-        });
-    const fromAddress = useGmail ? EMAIL_CFG.gmail_user : EMAIL_CFG.ionos_email;
-    const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
-    const itemRows = ITEMS.map(item =>
-      `<tr><td style="padding:4px 12px">${item.label}</td><td style="padding:4px 12px;text-align:right"><strong>${totals[item.key] || 0}</strong></td></tr>`
-    ).join('');
-    const html = `
+  const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
+  const itemRows = ITEMS.map(item =>
+    `<tr><td style="padding:4px 12px">${item.label}</td><td style="padding:4px 12px;text-align:right"><strong>${totals[item.key] || 0}</strong></td></tr>`
+  ).join('');
+  const html = `
 <div style="font-family:Arial,sans-serif;max-width:500px">
   <h2 style="color:#2c3e50">📊 Albarán de Envío a Selava</h2>
   <p><strong>Período:</strong> ${periodLabel}<br>
@@ -565,13 +547,63 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
   </table>
   <p style="color:#888;font-size:12px;margin-top:16px">Generado automáticamente — Bot Lavandería Clínica Bandama</p>
 </div>`;
-    await transporter.sendMail({
-      from: `"Bot Lavandería" <${fromAddress}>`,
-      to: LAUNDRY_CFG.resumen_email_to.join(', '),
-      subject: `Albarán Envío Selava — ${periodLabel} (${formatDate(startDate)} → ${formatDate(endDate)})`,
-      html,
-    });
-    console.log(`✅ Email resumen enviado a: ${LAUNDRY_CFG.resumen_email_to.join(', ')}`);
+  const subject = `Albarán Envío Selava — ${periodLabel} (${formatDate(startDate)} → ${formatDate(endDate)})`;
+  const to = LAUNDRY_CFG.resumen_email_to;
+
+  // EmailJS (HTTPS) — no usa puertos SMTP, funciona en cualquier plataforma
+  if (EMAIL_CFG.emailjs_service_id && EMAIL_CFG.emailjs_template_id && EMAIL_CFG.emailjs_public_key) {
+    try {
+      await axios.post('https://api.emailjs.com/api/v1.0/email/send', {
+        service_id:  EMAIL_CFG.emailjs_service_id,
+        template_id: EMAIL_CFG.emailjs_template_id,
+        user_id:     EMAIL_CFG.emailjs_public_key,
+        accessToken: EMAIL_CFG.emailjs_private_key,
+        template_params: {
+          to_email:   to.join(', '),
+          subject,
+          html_content: html,
+          period:     periodLabel,
+          date_range: `${formatDate(startDate)} → ${formatDate(endDate)}`,
+          row_count:  String(rowCount),
+          grand_total: String(grandTotal),
+        },
+      }, { timeout: 15000 });
+      console.log(`✅ Email resumen enviado (EmailJS) a: ${to.join(', ')}`);
+      return true;
+    } catch (err) {
+      console.error('❌ Error enviando email resumen (EmailJS):', err.response?.data || err.message);
+      return false;
+    }
+  }
+
+  // Fallback SMTP (IONOS / Gmail) — puede fallar en Render por bloqueo de puertos
+  const useGmail = !!(EMAIL_CFG.gmail_user && EMAIL_CFG.gmail_app_pass);
+  const hasIonos  = !!(EMAIL_CFG.ionos_email && EMAIL_CFG.ionos_password);
+  if (!useGmail && !hasIonos) return false;
+  try {
+    const transporter = useGmail
+      ? nodemailer.createTransport({
+          host: 'smtp.gmail.com',
+          port: 587,
+          secure: false,
+          family: 4,
+          auth: { user: EMAIL_CFG.gmail_user, pass: EMAIL_CFG.gmail_app_pass },
+          connectionTimeout: 10000,
+          greetingTimeout: 8000,
+          socketTimeout: 15000,
+        })
+      : nodemailer.createTransport({
+          host: EMAIL_CFG.ionos_smtp_host,
+          port: EMAIL_CFG.ionos_smtp_port,
+          secure: EMAIL_CFG.ionos_smtp_port === 465,
+          auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
+          connectionTimeout: 10000,
+          greetingTimeout: 8000,
+          socketTimeout: 15000,
+        });
+    const fromAddress = useGmail ? EMAIL_CFG.gmail_user : EMAIL_CFG.ionos_email;
+    await transporter.sendMail({ from: `"Bot Lavandería" <${fromAddress}>`, to, subject, html });
+    console.log(`✅ Email resumen enviado (SMTP) a: ${to.join(', ')}`);
     return true;
   } catch (err) {
     console.error('❌ Error enviando email resumen:', err.message);
