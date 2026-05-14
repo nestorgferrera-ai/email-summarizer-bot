@@ -65,6 +65,7 @@ const LAUNDRY_CFG = {
   daily_sheet_tab:       process.env.DAILY_SHEET_TAB       || 'Envío Diario',
   resumen_sheet_id:      process.env.RESUMEN_SHEET_ID      || process.env.DAILY_SHEET_ID,
   resumen_sheet_tab:     process.env.RESUMEN_SHEET_TAB     || 'Albaran Entrega Selava',
+  recepcion_sheet_tab:   process.env.RECEPCION_SHEET_TAB   || 'Albaranes PDF',
   google_credentials:    loadGoogleCredentials(),
   app_url:               process.env.APP_URL || '',
   allowed_chat_ids:      (process.env.ALLOWED_CHAT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
@@ -303,9 +304,25 @@ const ITEMS = [
   { key: 'alfombrillas',     label: 'Alfombrillas' },
 ];
 
+// Artículos para recepción de Selava (orden de columnas en hoja "Albaranes PDF")
+const RECEPCION_ITEMS = [
+  { key: 'alfombrillas',     label: 'Alfombrillas' },
+  { key: 'almohadas',        label: 'Almohadas' },
+  { key: 'colchas',          label: 'Colchas' },
+  { key: 'fundas_almohadas', label: 'Fundas Almohada' },
+  { key: 'mantas',           label: 'Mantas' },
+  { key: 'sabanas',          label: 'Sábanas' },
+  { key: 'toallas_bano',     label: 'Toallas Baño' },
+  { key: 'toallas_lavabo',   label: 'Toallas Lavabo' },
+];
+
+function getItemsForFlow(flow) {
+  return flow === 'recepcion' ? RECEPCION_ITEMS : ITEMS;
+}
+
 const ITEM_COL_START = 4; // columna D (0-indexed)
 
-const STATE = { IDLE: 'idle', ASKING_RESPONSABLE: 'asking_responsable', ASKING_ITEM: 'asking_item', CONFIRMING: 'confirming' };
+const STATE = { IDLE: 'idle', ASKING_RESPONSABLE: 'asking_responsable', ASKING_ALBARAN_NUM: 'asking_albaran_num', ASKING_ITEM: 'asking_item', CONFIRMING: 'confirming' };
 const sessions = new Map();
 
 function getSession(chatId) {
@@ -391,6 +408,133 @@ async function saveAlbaran(responsable, data) {
     return true;
   } catch (err) {
     console.error('❌ Error guardando albarán:', err.message);
+    return false;
+  }
+}
+
+// ---- Google Sheets: recepción de Selava (hoja "Albaranes PDF") ----
+async function saveRecepcionSelava(responsable, data) {
+  if (!LAUNDRY_CFG.resumen_sheet_id || !LAUNDRY_CFG.google_credentials) {
+    console.log('⚠️  Google Sheets (recepción Selava) no configurado');
+    return false;
+  }
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    await ensureSheetTabExists(sheets, LAUNDRY_CFG.resumen_sheet_id, LAUNDRY_CFG.recepcion_sheet_tab);
+    const now = new Date();
+    const fechaProceso = now.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const fechaAlbaran = formatDate(now);
+    // Columnas: A=FechaProceso B=NºAlbarán C=FechaAlbarán D=Alfombrillas E=Almohadas
+    // F=Colchas G=FundasAlmohada H=Mantas I=Sábanas J=ToallasBaño K=ToallasLavabo L=Total€ M=Archivo
+    const row = [
+      fechaProceso,
+      data.albaran_num || '',
+      fechaAlbaran,
+      data.alfombrillas || 0,
+      data.almohadas || 0,
+      data.colchas || 0,
+      data.fundas_almohadas || 0,
+      data.mantas || 0,
+      data.sabanas || 0,
+      data.toallas_bano || 0,
+      data.toallas_lavabo || 0,
+      '',
+      `Telegram Bot - ${responsable}`,
+    ];
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: LAUNDRY_CFG.resumen_sheet_id,
+      range: `${LAUNDRY_CFG.recepcion_sheet_tab}!A:M`,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [row] },
+    });
+    console.log(`✅ Recepción Selava guardada — ${responsable} ${fechaAlbaran}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Error guardando recepción Selava:', err.message);
+    return false;
+  }
+}
+
+// ---- Email: notificación recepción Selava ----
+async function sendRecepcionEmail(responsable, albaranNum, data) {
+  const to = ['nestor-garcia@clinicabandama.com'];
+  const now = new Date();
+  const dateStr = formatDate(now);
+  const grandTotal = RECEPCION_ITEMS.reduce((sum, item) => sum + (data[item.key] || 0), 0);
+  const itemRows = RECEPCION_ITEMS.map(item =>
+    `<tr><td style="padding:4px 12px">${item.label}</td><td style="padding:4px 12px;text-align:right"><strong>${data[item.key] || 0}</strong></td></tr>`
+  ).join('');
+  const html = `
+<div style="font-family:Arial,sans-serif;max-width:500px">
+  <h2 style="color:#2c3e50">📦 Recepción de Ropa — Selava</h2>
+  <p><strong>Fecha:</strong> ${dateStr}<br>
+     <strong>Nº Albarán:</strong> ${albaranNum || '—'}<br>
+     <strong>Responsable:</strong> ${responsable}</p>
+  <table style="border-collapse:collapse;width:100%">
+    <thead><tr style="background:#f0f0f0">
+      <th style="padding:6px 12px;text-align:left">Artículo</th>
+      <th style="padding:6px 12px;text-align:right">Unidades</th>
+    </tr></thead>
+    <tbody>${itemRows}</tbody>
+    <tfoot><tr style="background:#2c3e50;color:white">
+      <td style="padding:6px 12px"><strong>TOTAL PIEZAS</strong></td>
+      <td style="padding:6px 12px;text-align:right"><strong>${grandTotal}</strong></td>
+    </tr></tfoot>
+  </table>
+  <p style="color:#888;font-size:12px;margin-top:16px">Registrado vía Telegram — Bot Lavandería Clínica Bandama</p>
+</div>`;
+  const subject = `Recepción Selava — Albarán ${albaranNum || dateStr} (${dateStr})`;
+
+  if (EMAIL_CFG.emailjs_service_id && EMAIL_CFG.emailjs_template_id && EMAIL_CFG.emailjs_public_key) {
+    try {
+      await axios.post('https://api.emailjs.com/api/v1.0/email/send', {
+        service_id:  EMAIL_CFG.emailjs_service_id,
+        template_id: EMAIL_CFG.emailjs_template_id,
+        user_id:     EMAIL_CFG.emailjs_public_key,
+        accessToken: EMAIL_CFG.emailjs_private_key,
+        template_params: {
+          to_email:     to.join(', '),
+          subject,
+          html_content: html,
+          period:       `Albarán ${albaranNum}`,
+          date_range:   dateStr,
+          row_count:    '1',
+          grand_total:  String(grandTotal),
+        },
+      }, { timeout: 15000 });
+      console.log(`✅ Email recepción enviado (EmailJS) a: ${to.join(', ')}`);
+      return true;
+    } catch (err) {
+      console.error('❌ Error enviando email recepción (EmailJS):', err.response?.data || err.message);
+    }
+  }
+
+  const useGmail = !!(EMAIL_CFG.gmail_user && EMAIL_CFG.gmail_app_pass);
+  const hasIonos  = !!(EMAIL_CFG.ionos_email && EMAIL_CFG.ionos_password);
+  if (!useGmail && !hasIonos) return false;
+  try {
+    const transporter = useGmail
+      ? nodemailer.createTransport({
+          host: 'smtp.gmail.com', port: 587, secure: false, family: 4,
+          auth: { user: EMAIL_CFG.gmail_user, pass: EMAIL_CFG.gmail_app_pass },
+          connectionTimeout: 10000, greetingTimeout: 8000, socketTimeout: 15000,
+        })
+      : nodemailer.createTransport({
+          host: EMAIL_CFG.ionos_smtp_host, port: EMAIL_CFG.ionos_smtp_port,
+          secure: EMAIL_CFG.ionos_smtp_port === 465,
+          auth: { user: EMAIL_CFG.ionos_email, pass: EMAIL_CFG.ionos_password },
+          connectionTimeout: 10000, greetingTimeout: 8000, socketTimeout: 15000,
+        });
+    const fromAddress = useGmail ? EMAIL_CFG.gmail_user : EMAIL_CFG.ionos_email;
+    await transporter.sendMail({ from: `"Bot Lavandería" <${fromAddress}>`, to, subject, html });
+    console.log(`✅ Email recepción enviado (SMTP) a: ${to.join(', ')}`);
+    return true;
+  } catch (err) {
+    console.error('❌ Error enviando email recepción:', err.message);
     return false;
   }
 }
@@ -653,10 +797,23 @@ async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
 
 // ---- Lógica de conversación ----
 function buildConfirmText(flow, responsable, data) {
-  const lines = ITEMS.map(item => `  • ${item.label}: *${data[item.key] || 0}*`);
-  const titulo = flow === 'albaran' ? '📋 *Resumen del albarán de recepción*' : '🚚 *Resumen del envío diario*';
-  const pregunta = flow === 'albaran' ? '¿Confirmas la recepción?' : '¿Confirmas el envío?';
-  return `${titulo}\n\n👤 Responsable: *${responsable}*\n\n${lines.join('\n')}\n\n${pregunta}`;
+  const flowItems = getItemsForFlow(flow);
+  const lines = flowItems.map(item => `  • ${item.label}: *${data[item.key] || 0}*`);
+  let titulo, pregunta, extra;
+  if (flow === 'recepcion') {
+    titulo = `📦 *Recepción de Selava — Albarán ${data.albaran_num || '—'}*`;
+    pregunta = '¿Confirmas la recepción?';
+    extra = `📋 Nº Albarán: *${data.albaran_num || '—'}*\n`;
+  } else if (flow === 'albaran') {
+    titulo = '📋 *Resumen del albarán de recepción*';
+    pregunta = '¿Confirmas la recepción?';
+    extra = '';
+  } else {
+    titulo = '🚚 *Resumen del envío diario*';
+    pregunta = '¿Confirmas el envío?';
+    extra = '';
+  }
+  return `${titulo}\n\n👤 Responsable: *${responsable}*\n${extra}\n${lines.join('\n')}\n\n${pregunta}`;
 }
 
 async function startLaundryFlow(chatId, flow) {
@@ -664,7 +821,9 @@ async function startLaundryFlow(chatId, flow) {
   const s = getSession(chatId);
   s.state = STATE.ASKING_RESPONSABLE;
   s.flow = flow;
-  const prompt = flow === 'albaran'
+  const prompt = flow === 'recepcion'
+    ? '👤 ¿Cuál es tu nombre? (Responsable de la recepción de Selava)'
+    : flow === 'albaran'
     ? '👤 ¿Cuál es tu nombre? (Responsable de la recepción)'
     : '👤 ¿Cuál es tu nombre? (Responsable del envío)';
   await laundryMsg(chatId, prompt);
@@ -690,7 +849,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
     await laundryMsg(chatId,
       `🧺 *Bot de Lavandería — Clínica Bandama*\n\nHola ${fromName}!\n\n` +
       `*Comandos disponibles:*\n` +
-      `/nuevo — Registrar envío a la empresa de lavandería (no usar)\n` +
+      `/recepcion — Registrar recepción de ropa de Selava\n` +
       `/diario — Registrar envío de ropa a Selava\n` +
       `/semana — Ver desglose de envíos por día (última semana)\n` +
       `/resumen — Generar albarán de envíos por período\n` +
@@ -702,7 +861,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
   if (t === '/ayuda' || t === '/help') {
     await laundryMsg(chatId,
       `📖 *Ayuda — Bot de Lavandería*\n\n` +
-      `/nuevo — Registrar envío a la empresa de lavandería (no usar)\n` +
+      `/recepcion — Registrar recepción de ropa de Selava\n` +
       `/diario — Registrar envío diario de ropa a Selava\n` +
       `/semana — Ver desglose de envíos por día (última semana)\n` +
       `/resumen — Generar albarán por período (Mar-Jue / Vie-Lun)\n` +
@@ -717,15 +876,20 @@ async function handleLaundryMessage(chatId, text, fromName) {
     return;
   }
 
+  if (t === '/recepcion') {
+    await startLaundryFlow(chatId, 'recepcion');
+    return;
+  }
+
   if (t === '/nuevo') {
     await laundryMsg(chatId,
-      `ℹ️ */nuevo* es para registrar la *recepción* de ropa de Selava.\n\n` +
+      `ℹ️ Usa */recepcion* para registrar la *recepción* de ropa de Selava.\n\n` +
       `Para registrar un *envío a Selava* usa */diario*.\n\n¿Qué quieres hacer?`,
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '📦 Registrar envío a la empresa de lavandería (no usar)', callback_data: 'start_albaran' }],
-            [{ text: '🚚 Registrar envío a Selava (/diario)',     callback_data: 'start_diario'  }],
+            [{ text: '📦 Registrar recepción de Selava', callback_data: 'start_recepcion' }],
+            [{ text: '🚚 Registrar envío a Selava (/diario)', callback_data: 'start_diario'  }],
           ],
         },
       });
@@ -837,22 +1001,38 @@ async function handleLaundryMessage(chatId, text, fromName) {
   if (session.state === STATE.ASKING_RESPONSABLE) {
     if (!t || t.length < 2) { await laundryMsg(chatId, '⚠️ Por favor introduce un nombre válido.'); return; }
     session.responsable = t;
+    session.step = 0;
+    if (session.flow === 'recepcion') {
+      session.state = STATE.ASKING_ALBARAN_NUM;
+      await laundryMsg(chatId, `✅ Hola *${t}*!\n\n📋 ¿Cuál es el *Nº de Albarán* de Selava? (ej: A-26/1234)`);
+    } else {
+      session.state = STATE.ASKING_ITEM;
+      const flowItems = getItemsForFlow(session.flow);
+      await laundryMsg(chatId, `✅ Hola *${t}*! Escribe *0* si no hay ninguno.\n\n*${flowItems[0].label}* — ¿Cuántas unidades?`);
+    }
+    return;
+  }
+
+  if (session.state === STATE.ASKING_ALBARAN_NUM) {
+    if (!t || t.length < 1) { await laundryMsg(chatId, '⚠️ Por favor introduce el número de albarán.'); return; }
+    session.data.albaran_num = t;
     session.state = STATE.ASKING_ITEM;
     session.step = 0;
-    await laundryMsg(chatId, `✅ Hola *${t}*! Escribe *0* si no hay ninguno.\n\n*${ITEMS[0].label}* — ¿Cuántas unidades?`);
+    await laundryMsg(chatId, `✅ Albarán *${t}* registrado. Escribe *0* si no hay ninguno.\n\n*${RECEPCION_ITEMS[0].label}* — ¿Cuántas unidades?`);
     return;
   }
 
   if (session.state === STATE.ASKING_ITEM) {
     const qty = parseInt(t, 10);
+    const flowItems = getItemsForFlow(session.flow);
     if (isNaN(qty) || qty < 0) {
-      await laundryMsg(chatId, `⚠️ Introduce un número válido.\n\n*${ITEMS[session.step].label}* — ¿Cuántas unidades?`);
+      await laundryMsg(chatId, `⚠️ Introduce un número válido.\n\n*${flowItems[session.step].label}* — ¿Cuántas unidades?`);
       return;
     }
-    session.data[ITEMS[session.step].key] = qty;
+    session.data[flowItems[session.step].key] = qty;
     session.step++;
-    if (session.step < ITEMS.length) {
-      await laundryMsg(chatId, `*${ITEMS[session.step].label}* — ¿Cuántas unidades?`);
+    if (session.step < flowItems.length) {
+      await laundryMsg(chatId, `*${flowItems[session.step].label}* — ¿Cuántas unidades?`);
     } else {
       session.state = STATE.CONFIRMING;
       await laundryMsg(chatId, buildConfirmText(session.flow, session.responsable, session.data), {
@@ -867,15 +1047,16 @@ async function handleLaundryMessage(chatId, text, fromName) {
     return;
   }
 
-  await laundryMsg(chatId, 'Escribe /nuevo para registrar una recepción, /diario para un envío, o /ayuda para ver los comandos.');
+  await laundryMsg(chatId, 'Escribe /recepcion para registrar una recepción de Selava, /diario para un envío, o /ayuda para ver los comandos.');
 }
 
 async function handleLaundryCallback(chatId, callbackData, queryId) {
   await axios.post(`https://api.telegram.org/bot${LAUNDRY_CFG.telegram_token}/answerCallbackQuery`,
     { callback_query_id: queryId }, { timeout: 5000 }).catch(() => {});
 
-  if (callbackData === 'start_albaran') { await startLaundryFlow(chatId, 'albaran'); return; }
-  if (callbackData === 'start_diario')  { await startLaundryFlow(chatId, 'diario');  return; }
+  if (callbackData === 'start_recepcion') { await startLaundryFlow(chatId, 'recepcion'); return; }
+  if (callbackData === 'start_albaran')   { await startLaundryFlow(chatId, 'albaran');   return; }
+  if (callbackData === 'start_diario')    { await startLaundryFlow(chatId, 'diario');    return; }
 
   if (callbackData === 'resumen_martes_jueves' || callbackData === 'resumen_viernes_lunes') {
     const periodKey = callbackData === 'resumen_martes_jueves' ? 'martes_jueves' : 'viernes_lunes';
@@ -926,20 +1107,46 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
     return;
   }
   if (callbackData === 'confirm') {
-    const isAlbaran = session.flow === 'albaran';
-    await laundryMsg(chatId, `⏳ Guardando ${isAlbaran ? 'albarán' : 'envío diario'}...`);
-    const saved = isAlbaran
-      ? await saveAlbaran(session.responsable, session.data)
-      : await saveDailyEntry(session.responsable, session.data);
-    const { responsable, data } = session;
+    const isAlbaran   = session.flow === 'albaran';
+    const isRecepcion = session.flow === 'recepcion';
+    const flowLabel   = isRecepcion ? 'recepción de Selava' : isAlbaran ? 'albarán' : 'envío diario';
+    await laundryMsg(chatId, `⏳ Guardando ${flowLabel}...`);
+    let saved;
+    if (isRecepcion) {
+      saved = await saveRecepcionSelava(session.responsable, session.data);
+    } else if (isAlbaran) {
+      saved = await saveAlbaran(session.responsable, session.data);
+    } else {
+      saved = await saveDailyEntry(session.responsable, session.data);
+    }
+    const { responsable, data, flow } = session;
     resetSession(chatId);
     const now = new Date();
     const dateStr = formatDate(now);
     const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    const total = ITEMS.reduce((sum, item) => sum + (data[item.key] || 0), 0);
+    const flowItems = getItemsForFlow(flow);
+    const total = flowItems.reduce((sum, item) => sum + (data[item.key] || 0), 0);
+
+    if (isRecepcion) {
+      const albaranInfo = data.albaran_num ? `\n📋 Nº Albarán: *${data.albaran_num}*` : '';
+      const itemLines = RECEPCION_ITEMS.map(item => `  • ${item.label}: *${data[item.key] || 0}*`).join('\n');
+      if (saved) {
+        const emailed = await sendRecepcionEmail(responsable, data.albaran_num, data);
+        const emailStatus = emailed
+          ? '✅ _Email enviado a nestor-garcia@clinicabandama.com_'
+          : '⚠️ _No se pudo enviar el email._';
+        await laundryMsg(chatId,
+          `✅ *Recepción de Selava registrada*\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}${albaranInfo}\n📦 Total artículos: *${total} unidades*\n\n${itemLines}\n\n_Datos guardados en Google Sheets._\n${emailStatus}\n\nUsa /recepcion para registrar otra recepción.`);
+      } else {
+        await laundryMsg(chatId,
+          `⚠️ *Registrado (sin Google Sheets)*\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}${albaranInfo}\n📦 Total artículos: *${total} unidades*\n\n_No se pudo guardar en Google Sheets. Contacta con el administrador._\n\nUsa /recepcion para registrar otra recepción.`);
+      }
+      return;
+    }
+
     const titulo = isAlbaran ? '✅ *Albarán registrado correctamente*' : '✅ *Envío diario registrado*';
     const nextCmd = isAlbaran
-      ? 'Usa /nuevo para registrar otra recepción.'
+      ? 'Usa /recepcion para registrar otra recepción.'
       : 'Usa /diario para registrar otro envío.\nUsa /resumen para generar el albarán por período.';
     if (saved) {
       await laundryMsg(chatId,
@@ -954,11 +1161,12 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
 async function registerLaundryCommands() {
   if (!LAUNDRY_CFG.telegram_token) return;
   const commands = [
-    { command: 'diario',   description: 'Registrar envío diario a Selava' },
-    { command: 'semana',   description: 'Ver desglose de envíos (última semana)' },
-    { command: 'resumen',  description: 'Generar albarán de envíos por período' },
-    { command: 'cancelar', description: 'Cancelar el registro en curso' },
-    { command: 'ayuda',    description: 'Ver comandos disponibles' },
+    { command: 'recepcion', description: 'Registrar recepción de ropa de Selava' },
+    { command: 'diario',    description: 'Registrar envío diario a Selava' },
+    { command: 'semana',    description: 'Ver desglose de envíos (última semana)' },
+    { command: 'resumen',   description: 'Generar albarán de envíos por período' },
+    { command: 'cancelar',  description: 'Cancelar el registro en curso' },
+    { command: 'ayuda',     description: 'Ver comandos disponibles' },
   ];
   try {
     await axios.post(
