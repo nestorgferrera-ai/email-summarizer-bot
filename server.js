@@ -487,7 +487,8 @@ async function sendRecepcionEmail(responsable, albaranNum, data) {
   </table>
   <p style="color:#888;font-size:12px;margin-top:16px">Registrado vía Telegram — Bot Lavandería Clínica Bandama</p>
 </div>`;
-  const subject = `Recepción Selava — Albarán ${albaranNum || dateStr} (${dateStr})`;
+  const fmtSubject = d => d.replace(/\//g, '-');
+  const subject = `Recepción Selava — Albarán ${albaranNum || fmtSubject(dateStr)} (${fmtSubject(dateStr)})`;
 
   if (EMAIL_CFG.emailjs_service_id && EMAIL_CFG.emailjs_template_id && EMAIL_CFG.emailjs_public_key) {
     try {
