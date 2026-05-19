@@ -363,6 +363,17 @@ function parseSheetDate(str) {
   date.setHours(0, 0, 0, 0);
   return date;
 }
+function parseSheetDateTime(str) {
+  if (!str) return null;
+  // Soporta "19/05/2026 14:00:00" y "19/05/2026, 14:00:00" (variación de toLocaleString)
+  const clean = str.replace(',', '').trim();
+  const parts = clean.split(/\s+/);
+  if (parts.length < 2) return null;
+  const [d, m, y] = parts[0].split('/').map(Number);
+  const [hh, mm, ss] = parts[1].split(':').map(Number);
+  if (!d || !m || !y || isNaN(hh) || isNaN(mm)) return null;
+  return new Date(y, m - 1, d, hh, mm, ss || 0, 0);
+}
 
 // ---- Telegram ----
 async function laundryMsg(chatId, text, extra = {}) {
@@ -615,7 +626,7 @@ async function getDailyBreakdown() {
 }
 
 // ---- Google Sheets: leer totales por período ----
-async function getTotalsForPeriod(startDate, endDate) {
+async function getTotalsForPeriod(startDate, endDate, since = null) {
   if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
   try {
     const auth = new google.auth.GoogleAuth({
@@ -633,8 +644,13 @@ async function getTotalsForPeriod(startDate, endDate) {
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       if (!row || !row[1]) continue;
-      const rowDate = parseSheetDate(row[1]);
-      if (!rowDate || rowDate < startDate || rowDate > endDate) continue;
+      if (since) {
+        const rowTs = parseSheetDateTime(row[0]);
+        if (!rowTs || rowTs <= since || rowTs > endDate) continue;
+      } else {
+        const rowDate = parseSheetDate(row[1]);
+        if (!rowDate || rowDate < startDate || rowDate > endDate) continue;
+      }
       rowCount++;
       ITEMS.forEach((item, idx) => {
         const val = parseInt(row[ITEM_COL_START + idx], 10);
@@ -793,6 +809,31 @@ async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
   } catch (err) {
     console.error('❌ Error guardando resumen:', err.message, err.response?.data || '');
     return false;
+  }
+}
+
+// ---- Google Sheets: timestamp del último resumen generado ----
+async function getLastResumenTimestamp() {
+  if (!LAUNDRY_CFG.resumen_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: LAUNDRY_CFG.resumen_sheet_id,
+      range: `${LAUNDRY_CFG.resumen_sheet_tab}!A:A`,
+    });
+    const rows = response.data.values || [];
+    for (let i = rows.length - 1; i >= 1; i--) {
+      const ts = parseSheetDateTime(rows[i]?.[0]);
+      if (ts) return ts;
+    }
+    return null;
+  } catch (err) {
+    console.error('❌ Error leyendo último resumen:', err.message);
+    return null;
   }
 }
 
@@ -1061,22 +1102,36 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
 
   if (callbackData === 'resumen_martes_jueves' || callbackData === 'resumen_viernes_lunes') {
     const periodKey = callbackData === 'resumen_martes_jueves' ? 'martes_jueves' : 'viernes_lunes';
-    const { startDate, endDate, label } = getPeriodDates(periodKey);
-    await laundryMsg(chatId, `⏳ Calculando totales para *${label}* (${formatDate(startDate)} → ${formatDate(endDate)})...`);
-    const result = await getTotalsForPeriod(startDate, endDate);
+    const { startDate: periodStart, label } = getPeriodDates(periodKey);
+
+    const lastTs = await getLastResumenTimestamp();
+    let since = null;
+    const windowEnd = new Date();
+
+    if (lastTs) {
+      since = new Date(lastTs.getTime() + 60 * 1000); // lastTs + 1 minuto
+    }
+
+    const displayStart = lastTs || periodStart;
+
+    await laundryMsg(chatId, `⏳ Calculando totales para *${label}*...`);
+    const result = await getTotalsForPeriod(periodStart, windowEnd, since);
     if (!result) {
       await laundryMsg(chatId, '❌ No se pudo conectar con Google Sheets. Contacta con el administrador.');
       return;
     }
     const { totals, rowCount } = result;
     if (rowCount === 0) {
-      await laundryMsg(chatId, `ℹ️ No hay registros de envíos para *${label}* (${formatDate(startDate)} → ${formatDate(endDate)}).\n\nUsa /diario para registrar envíos.`);
+      const desdeStr = since
+        ? `${formatDate(since)} ${since.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}`
+        : formatDate(periodStart);
+      await laundryMsg(chatId, `ℹ️ No hay registros de envíos para *${label}* desde ${desdeStr}.\n\nUsa /diario para registrar envíos.`);
       return;
     }
     await laundryMsg(chatId, '⏳ Guardando albarán en Google Sheets...');
     const [saved, emailed] = await Promise.all([
-      saveResumen(label, startDate, endDate, totals, rowCount),
-      sendResumenEmail(label, startDate, endDate, totals, rowCount),
+      saveResumen(label, displayStart, windowEnd, totals, rowCount),
+      sendResumenEmail(label, displayStart, windowEnd, totals, rowCount),
     ]);
     const grandTotal = ITEMS.reduce((sum, item) => sum + (totals[item.key] || 0), 0);
     const lines = ITEMS.map(item => `  • ${item.label}: *${totals[item.key] || 0}*`);
@@ -1090,7 +1145,7 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
     await laundryMsg(chatId,
       `📊 *Albarán de Envío a Selava*\n\n` +
       `📅 Período: *${label}*\n` +
-      `🗓 ${formatDate(startDate)} → ${formatDate(endDate)}\n` +
+      `🗓 ${formatDate(displayStart)} → ${formatDate(windowEnd)}\n` +
       `📋 Registros: ${rowCount} envío${rowCount !== 1 ? 's' : ''}\n\n` +
       `${lines.join('\n')}\n\n` +
       `📦 *TOTAL PIEZAS: ${grandTotal}*\n\n` + statusMsg);
