@@ -365,14 +365,13 @@ function parseSheetDate(str) {
 }
 function parseSheetDateTime(str) {
   if (!str) return null;
-  // Soporta "19/05/2026 14:00:00" y "19/05/2026, 14:00:00" (variación de toLocaleString)
-  const clean = str.replace(',', '').trim();
-  const parts = clean.split(/\s+/);
-  if (parts.length < 2) return null;
-  const [d, m, y] = parts[0].split('/').map(Number);
-  const [hh, mm, ss] = parts[1].split(':').map(Number);
-  if (!d || !m || !y || isNaN(hh) || isNaN(mm)) return null;
-  return new Date(y, m - 1, d, hh, mm, ss || 0, 0);
+  // Extrae DD/MM/YYYY y HH:MM[:SS] ignorando cualquier separador entre fecha y hora
+  // (toLocaleString puede usar espacio fino U+202F que no divide con \s en todos los entornos)
+  const m = String(str).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})[^\d]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const [, d, mo, y, hh, mm, ss] = m.map(v => v === undefined ? 0 : Number(v));
+  if (!d || !mo || !y || isNaN(hh) || isNaN(mm)) return null;
+  return new Date(y, mo - 1, d, hh, mm, ss, 0);
 }
 
 // ---- Telegram ----
