@@ -790,7 +790,7 @@ async function saveResumen(periodLabel, startDate, endDate, totals, rowCount) {
     // A=MarcaTemporal B=Fecha C=Hora D=Sabanas E=Mantas F=Colchas G=FundasAlmohadas
     // H=Almohadas I=Toallas J=ToallasPequeñas K=Alfombrillas L=Período M=Total
     const row = [
-      marcaTemporal, formatDate(startDate), timeStr,
+      marcaTemporal, formatDate(now), timeStr,
       totals.sabanas || 0, totals.mantas || 0, totals.colchas || 0,
       totals.fundas_almohadas || 0, totals.almohadas || 0,
       totals.toallas || 0, totals.toallas_pequenas || 0, totals.alfombrillas || 0,
