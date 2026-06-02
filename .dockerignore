@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.github
+README.md
+EJEMPLO-RESUMEN.txt
+Procfile
+*.md
+.DS_Store
