@@ -229,10 +229,7 @@ function splitTelegramMessage(text, limit = 4000) {
   return chunks;
 }
 
-async function sendEmailTelegram(message, chatId = null) {
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  const fullMessage = `📋 *Resumen de correos - ${dateStr}*\n\n${message}`;
+async function sendTelegramChunks(fullMessage, chatId = null) {
   const chunks = splitTelegramMessage(fullMessage);
   const target = chatId || EMAIL_CFG.telegram_chat_id;
 
@@ -245,7 +242,15 @@ async function sendEmailTelegram(message, chatId = null) {
       }, { timeout: 15000 });
     });
   }
-  console.log(`✅ Resumen de email enviado por Telegram (${chunks.length} mensaje${chunks.length > 1 ? 's' : ''})`);
+  return chunks.length;
+}
+
+async function sendEmailTelegram(message, chatId = null) {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const fullMessage = `📋 *Resumen de correos - ${dateStr}*\n\n${message}`;
+  const count = await sendTelegramChunks(fullMessage, chatId);
+  console.log(`✅ Resumen de email enviado por Telegram (${count} mensaje${count > 1 ? 's' : ''})`);
 }
 
 async function sendDailyEmailSummary(chatId = null) {
@@ -274,14 +279,8 @@ async function sendWeeklyEmailSummary() {
     const summary = await summarizeWithClaude(emails, 'semanal');
     const now = new Date();
     const dateStr = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    await withRetry(async () => {
-      await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
-        chat_id: EMAIL_CFG.telegram_chat_id,
-        text: `📅 *RESUMEN SEMANAL - ${dateStr}*\n\n${summary}`,
-        parse_mode: 'Markdown',
-      }, { timeout: 15000 });
-    });
-    console.log('✅ Resumen semanal completado');
+    const count = await sendTelegramChunks(`📅 *RESUMEN SEMANAL - ${dateStr}*\n\n${summary}`);
+    console.log(`✅ Resumen semanal completado (${count} mensaje${count > 1 ? 's' : ''})`);
   } catch (error) {
     console.error('❌ Error en resumen semanal:', error.message);
     try { await sendEmailTelegram(`❌ Error en resumen semanal:\n\`\`\`\n${error.message}\n\`\`\``); } catch {}
