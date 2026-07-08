@@ -238,9 +238,46 @@ Formato ejemplo:
 // ============================================================================
 // ENVIAR POR TELEGRAM
 // ============================================================================
-async function sendTelegramMessage(message, chatId = null) {
-  const url = `https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`;
 
+// Telegram limita los mensajes a 4096 caracteres; se trocea por líneas para no cortar palabras.
+function splitTelegramMessage(text, limit = 4000) {
+  if (text.length <= limit) return [text];
+  const chunks = [];
+  const lines = text.split('\n');
+  let current = '';
+  for (const line of lines) {
+    if ((current + '\n' + line).length > limit) {
+      if (current) chunks.push(current.trim());
+      current = line;
+    } else {
+      current = current ? current + '\n' + line : line;
+    }
+  }
+  if (current) chunks.push(current.trim());
+  return chunks;
+}
+
+async function sendTelegramChunks(fullMessage, chatId = null) {
+  const url = `https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`;
+  const target = chatId || CONFIG.telegram_chat_id;
+  const chunks = splitTelegramMessage(fullMessage);
+
+  for (const chunk of chunks) {
+    await withRetry(async () => {
+      const response = await axios.post(url, {
+        chat_id: target,
+        text: chunk,
+        parse_mode: 'Markdown'
+      }, { timeout: 15000 });
+      return response.data;
+    });
+  }
+
+  console.log(`✅ Mensaje enviado por Telegram (${chunks.length} mensaje${chunks.length > 1 ? 's' : ''})`);
+  return chunks.length;
+}
+
+async function sendTelegramMessage(message, chatId = null) {
   const now = new Date();
   const dateStr = now.toLocaleDateString('es-ES', {
     weekday: 'long',
@@ -250,17 +287,7 @@ async function sendTelegramMessage(message, chatId = null) {
   });
 
   const fullMessage = `📋 *Resumen de correos - ${dateStr}*\n\n${message}`;
-
-  return withRetry(async () => {
-    const response = await axios.post(url, {
-      chat_id: chatId || CONFIG.telegram_chat_id,
-      text: fullMessage,
-      parse_mode: 'Markdown'
-    }, { timeout: 15000 });
-
-    console.log('✅ Mensaje enviado por Telegram');
-    return response.data;
-  });
+  return sendTelegramChunks(fullMessage, chatId);
 }
 
 // ============================================================================
@@ -311,13 +338,7 @@ async function sendWeeklyEmailSummary() {
     const dateStr = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const weeklyMessage = `📅 *RESUMEN SEMANAL - ${dateStr}*\n\n${summary}`;
 
-    await withRetry(async () => {
-      await axios.post(`https://api.telegram.org/bot${CONFIG.telegram_token}/sendMessage`, {
-        chat_id: CONFIG.telegram_chat_id,
-        text: weeklyMessage,
-        parse_mode: 'Markdown'
-      }, { timeout: 15000 });
-    });
+    await sendTelegramChunks(weeklyMessage);
 
     console.log('✅ Resumen semanal completado\n');
   } catch (error) {
