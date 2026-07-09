@@ -80,7 +80,9 @@ async function withRetry(fn, retries = 3, delayMs = 1000) {
     try {
       return await fn();
     } catch (error) {
-      if (attempt === retries) throw error;
+      const status = error.response?.status;
+      const nonRetryable = status >= 400 && status < 500;
+      if (attempt === retries || nonRetryable) throw error;
       console.log(`⚠️ Intento ${attempt} fallido, reintentando en ${delayMs}ms...`);
       await new Promise(r => setTimeout(r, delayMs));
       delayMs *= 2;
@@ -217,32 +219,67 @@ function splitTelegramMessage(text, limit = 4000) {
   const chunks = [];
   const lines = text.split('\n');
   let current = '';
+
+  const flush = () => {
+    if (current) {
+      chunks.push(current.trim());
+      current = '';
+    }
+  };
+
   for (const line of lines) {
+    if (line.length > limit) {
+      // Una sola línea ya supera el límite: se trocea en bruto para no perderla.
+      flush();
+      for (let i = 0; i < line.length; i += limit) {
+        chunks.push(line.slice(i, i + limit));
+      }
+      continue;
+    }
     if ((current + '\n' + line).length > limit) {
-      if (current) chunks.push(current.trim());
+      flush();
       current = line;
     } else {
       current = current ? current + '\n' + line : line;
     }
   }
-  if (current) chunks.push(current.trim());
+  flush();
   return chunks;
 }
 
 async function sendTelegramChunks(fullMessage, chatId = null) {
   const chunks = splitTelegramMessage(fullMessage);
   const target = chatId || EMAIL_CFG.telegram_chat_id;
+  let sent = 0;
 
   for (const chunk of chunks) {
-    await withRetry(async () => {
-      await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
-        chat_id: target,
-        text: chunk,
-        parse_mode: 'Markdown',
-      }, { timeout: 15000 });
-    });
+    try {
+      await withRetry(async () => {
+        await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+          chat_id: target,
+          text: chunk,
+          parse_mode: 'Markdown',
+        }, { timeout: 15000 });
+      });
+      sent++;
+    } catch (error) {
+      // Un fragmento puede quedar con una entidad Markdown sin cerrar (p.ej. un "*"
+      // suelto). Reintentamos ese fragmento en texto plano en vez de abortar el resto.
+      console.log(`⚠️ Fallo enviando fragmento en Markdown, reintentando en texto plano: ${error.message}`);
+      try {
+        await withRetry(async () => {
+          await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+            chat_id: target,
+            text: chunk,
+          }, { timeout: 15000 });
+        });
+        sent++;
+      } catch (plainError) {
+        console.error(`❌ No se pudo enviar el fragmento ${sent + 1}/${chunks.length}:`, plainError.message);
+      }
+    }
   }
-  return chunks.length;
+  return sent;
 }
 
 async function sendEmailTelegram(message, chatId = null) {
