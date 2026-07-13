@@ -15,6 +15,7 @@ require('dotenv').config();
 const { runEmailAnalysisAndDrafts, processIAFolder } = require('./email-analysis-drafts');
 const {
   connectToImap,
+  extractHeaders,
   fetchEmails,
   parseSearchQuery,
   searchEmails,
@@ -342,8 +343,9 @@ async function handleSearchDebug(chatId, rawQuery) {
       lines.push('');
       lines.push('*Últimos 3 correos (cabecera cruda):*');
       for (const msg of recent) {
-        const from = msg.headers?.from?.[0] || '(sin remitente)';
-        const subject = msg.headers?.subject?.[0] || '(sin asunto)';
+        const headers = extractHeaders(msg);
+        const from = headers.from?.[0] || '(sin remitente)';
+        const subject = headers.subject?.[0] || '(sin asunto)';
         lines.push(`• ${subject} — ${from}`);
       }
     }
