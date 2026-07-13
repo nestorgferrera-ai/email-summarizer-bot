@@ -295,9 +295,17 @@ async function handleEmailSearch(chatId, rawQuery) {
     const limit = interpreted?.limit ? Math.min(interpreted.limit, 30) : 15;
 
     connection = await withRetry(() => connectToIonos());
-    const emails = query
+    let emails = query
       ? await searchEmails(connection, { query, field }, { limit })
       : await fetchEmails(connection, { last: limit });
+
+    // Si se buscó por remitente/asunto y no hubo resultados, reintenta en todo
+    // el mensaje antes de rendirse: evita falsos negativos cuando el campo
+    // interpretado no era el correcto (p.ej. el término está en el asunto de
+    // un correo de otro remitente).
+    if (emails.length === 0 && query && field !== 'text') {
+      emails = await searchEmails(connection, { query, field: 'text' }, { limit });
+    }
 
     if (emails.length === 0) {
       await sendTelegramChunks(`🔍 No se encontraron correos para: "${rawQuery}"`, chatId);
