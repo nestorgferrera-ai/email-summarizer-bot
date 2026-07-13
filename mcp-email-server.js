@@ -52,20 +52,22 @@ server.registerTool(
       query: z.string().min(1).describe('Texto a buscar, opcionalmente con prefijo de:/asunto:'),
       days: z.number().int().min(1).max(365).optional()
         .describe('Limitar la búsqueda a los últimos N días (opcional)'),
+      unread: z.boolean().optional()
+        .describe('Si es true, busca solo entre correos no leídos (IMAP UNSEEN)'),
       limit: z.number().int().min(1).max(50).optional()
         .describe('Número máximo de resultados a devolver (por defecto 15)'),
     },
   },
-  async ({ query, days, limit = 15 }) => {
+  async ({ query, days, unread = false, limit = 15 }) => {
     const { query: parsedQuery, field } = parseSearchQuery(query);
 
     const emails = await withImapConnection(async connection => {
-      const results = await searchEmails(connection, { query: parsedQuery, field, days: days || null }, { limit });
+      const results = await searchEmails(connection, { query: parsedQuery, field, days: days || null, unread }, { limit });
       // Si se buscó por remitente/asunto y no hubo resultados, reintenta en
       // todo el mensaje: el término puede estar en una parte distinta a la
       // que se asumió (p.ej. en el asunto de un correo de otro remitente).
       if (results.length === 0 && field !== 'text') {
-        return searchEmails(connection, { query: parsedQuery, field: 'text', days: days || null }, { limit });
+        return searchEmails(connection, { query: parsedQuery, field: 'text', days: days || null, unread }, { limit });
       }
       return results;
     });
@@ -90,11 +92,13 @@ server.registerTool(
         .describe('Número de correos recientes a listar (por defecto 20, ignorado si se indica "days")'),
       days: z.number().int().min(1).max(365).optional()
         .describe('Listar todos los correos de los últimos N días en vez de un número fijo'),
+      unread: z.boolean().optional()
+        .describe('Si es true, lista solo correos no leídos (IMAP UNSEEN)'),
     },
   },
-  async ({ last = 20, days }) => {
+  async ({ last = 20, days, unread = false }) => {
     const emails = await withImapConnection(connection =>
-      fetchEmails(connection, days ? { days } : { last })
+      fetchEmails(connection, days ? { days, unread } : { last, unread })
     );
 
     if (emails.length === 0) {

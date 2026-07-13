@@ -291,21 +291,21 @@ async function handleEmailSearch(chatId, rawQuery) {
     const interpreted = await interpretSearchQuery(rawQuery, {
       apiKey: EMAIL_CFG.claude_api_key,
     });
-    const { query, field } = interpreted || parseSearchQuery(rawQuery);
+    const { query, field, unread } = interpreted || parseSearchQuery(rawQuery);
     const limit = interpreted?.limit ? Math.min(interpreted.limit, 30) : 15;
     const days = interpreted?.days || null;
 
     connection = await withRetry(() => connectToIonos());
     let emails = query
-      ? await searchEmails(connection, { query, field, days }, { limit })
-      : await fetchEmails(connection, days ? { days } : { last: limit });
+      ? await searchEmails(connection, { query, field, days, unread }, { limit })
+      : await fetchEmails(connection, days ? { days, unread } : { last: limit, unread });
 
     // Si se buscó por remitente/asunto y no hubo resultados, reintenta en todo
     // el mensaje antes de rendirse: evita falsos negativos cuando el campo
     // interpretado no era el correcto (p.ej. el término está en el asunto de
     // un correo de otro remitente).
     if (emails.length === 0 && query && field !== 'text') {
-      emails = await searchEmails(connection, { query, field: 'text', days }, { limit });
+      emails = await searchEmails(connection, { query, field: 'text', days, unread }, { limit });
     }
 
     if (emails.length === 0) {
@@ -318,9 +318,10 @@ async function handleEmailSearch(chatId, rawQuery) {
       const timeStr = e.date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
       return `${i + 1}. 📩 *${e.subject}*\n   De: ${e.from}\n   🗓 ${dateStr} ${timeStr}\n   _${e.preview}_`;
     });
+    const unreadTag = unread ? ' 📩 sin leer' : '';
     const header = query
-      ? `🔍 *Resultados para:* "${rawQuery}" (${emails.length})\n\n`
-      : `📬 *Últimos ${emails.length} correos*\n\n`;
+      ? `🔍 *Resultados para:* "${rawQuery}"${unreadTag} (${emails.length})\n\n`
+      : `📬 *Últimos ${emails.length} correos${unreadTag}*\n\n`;
     await sendTelegramChunks(header + lines.join('\n\n'), chatId);
     console.log(`✅ Búsqueda de correos completada — "${rawQuery}" (${emails.length} resultados)`);
   } catch (error) {
@@ -369,7 +370,7 @@ async function handleSearchDebug(chatId, rawQuery) {
     lines.push(`*Interpretación de:* "${rawQuery}"`);
     const interpreted = await interpretSearchQuery(rawQuery, { apiKey: EMAIL_CFG.claude_api_key });
     if (interpreted) {
-      lines.push(`→ Claude: field=${interpreted.field}, query="${interpreted.query}", limit=${interpreted.limit ?? '(sin límite)'}, days=${interpreted.days ?? '(sin rango)'}`);
+      lines.push(`→ Claude: field=${interpreted.field}, query="${interpreted.query}", limit=${interpreted.limit ?? '(sin límite)'}, days=${interpreted.days ?? '(sin rango)'}, unread=${interpreted.unread}`);
     } else {
       const fallback = parseSearchQuery(rawQuery);
       lines.push(`→ Claude no disponible o falló. Modo literal: field=${fallback.field}, query="${fallback.query}"`);
@@ -1450,7 +1451,7 @@ app.post('/email-webhook', async (req, res) => {
     if (!query) {
       await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
         chat_id: chatId,
-        text: '🔍 Uso: `/buscar <texto>`\n\nEjemplos:\n• /buscar factura selava\n• /buscar de José Roca\n• /buscar de Jerónimo que mencione a Carlos Roca\n• /buscar de Mapfre del último mes\n• /buscar de:mapfre (sintaxis literal también funciona)',
+        text: '🔍 Uso: `/buscar <texto>`\n\nEjemplos:\n• /buscar factura selava\n• /buscar de José Roca\n• /buscar de Jerónimo que mencione a Carlos Roca\n• /buscar de Mapfre del último mes\n• /buscar correos sin leer de Jerónimo\n• /buscar de:mapfre (sintaxis literal también funciona)',
         parse_mode: 'Markdown',
       }).catch(() => {});
       return;
