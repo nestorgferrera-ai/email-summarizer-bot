@@ -321,6 +321,53 @@ async function handleEmailSearch(chatId, rawQuery) {
   }
 }
 
+async function handleSearchDebug(chatId, rawQuery) {
+  const lines = ['🔍 *Diagnóstico de búsqueda*', ''];
+  lines.push(`📧 IONOS_EMAIL: ${EMAIL_CFG.ionos_email ? '✅ configurado' : '❌ NO configurado'}`);
+  lines.push(`🔐 IONOS_PASSWORD: ${EMAIL_CFG.ionos_password ? '✅ configurada' : '❌ NO configurada'}`);
+  lines.push(`🤖 CLAUDE_API_KEY: ${EMAIL_CFG.claude_api_key ? '✅ configurada' : '❌ NO configurada (se usará el modo literal de:/asunto:)'}`);
+  lines.push('');
+
+  let connection;
+  try {
+    connection = await withRetry(() => connectToIonos());
+    lines.push('🌐 Conexión IMAP: ✅ OK');
+
+    await connection.openBox('INBOX', false);
+    const all = await connection.search(['ALL'], { bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)' });
+    lines.push(`📬 Correos en INBOX: ${all.length}`);
+
+    const recent = all.slice(-3).reverse();
+    if (recent.length > 0) {
+      lines.push('');
+      lines.push('*Últimos 3 correos (cabecera cruda):*');
+      for (const msg of recent) {
+        const from = msg.headers?.from?.[0] || '(sin remitente)';
+        const subject = msg.headers?.subject?.[0] || '(sin asunto)';
+        lines.push(`• ${subject} — ${from}`);
+      }
+    }
+  } catch (err) {
+    lines.push(`🌐 Conexión IMAP: ❌ ${err.message}`);
+  } finally {
+    if (connection) { try { await connection.end(); } catch {} }
+  }
+
+  if (rawQuery) {
+    lines.push('');
+    lines.push(`*Interpretación de:* "${rawQuery}"`);
+    const interpreted = await interpretSearchQuery(rawQuery, { apiKey: EMAIL_CFG.claude_api_key });
+    if (interpreted) {
+      lines.push(`→ Claude: field=${interpreted.field}, query="${interpreted.query}", limit=${interpreted.limit ?? '(sin límite)'}`);
+    } else {
+      const fallback = parseSearchQuery(rawQuery);
+      lines.push(`→ Claude no disponible o falló. Modo literal: field=${fallback.field}, query="${fallback.query}"`);
+    }
+  }
+
+  await sendTelegramChunks(lines.join('\n'), chatId);
+}
+
 // ============================================================================
 // LAUNDRY BOT — ARTÍCULOS, SESIONES Y GOOGLE SHEETS
 // ============================================================================
@@ -1400,6 +1447,9 @@ app.post('/email-webhook', async (req, res) => {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`,
       { chat_id: chatId, text: `🔍 Buscando "${query}"...` }).catch(() => {});
     await handleEmailSearch(chatId, query);
+  } else if (text === '/buscardebug' || text.startsWith('/buscardebug ')) {
+    const query = text.replace(/^\/buscardebug\s*/i, '').trim();
+    await handleSearchDebug(chatId, query);
   } else if (text === '/ayuda') {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
       chat_id: chatId,
