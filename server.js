@@ -156,12 +156,15 @@ Formato:
   return withRetry(async () => {
     const response = await axios.post('https://api.anthropic.com/v1/messages', {
       model: EMAIL_CFG.claude_model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     }, {
       headers: { 'x-api-key': EMAIL_CFG.claude_api_key, 'anthropic-version': '2023-06-01' },
       timeout: 30000,
     });
+    if (response.data.stop_reason === 'max_tokens') {
+      console.warn(`⚠️ Resumen ${tipo} cortado por max_tokens — considera subir el límite o reducir el nº de correos`);
+    }
     return response.data.content[0].text;
   });
 }
