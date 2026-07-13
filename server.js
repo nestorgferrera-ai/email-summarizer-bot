@@ -293,18 +293,19 @@ async function handleEmailSearch(chatId, rawQuery) {
     });
     const { query, field } = interpreted || parseSearchQuery(rawQuery);
     const limit = interpreted?.limit ? Math.min(interpreted.limit, 30) : 15;
+    const days = interpreted?.days || null;
 
     connection = await withRetry(() => connectToIonos());
     let emails = query
-      ? await searchEmails(connection, { query, field }, { limit })
-      : await fetchEmails(connection, { last: limit });
+      ? await searchEmails(connection, { query, field, days }, { limit })
+      : await fetchEmails(connection, days ? { days } : { last: limit });
 
     // Si se buscó por remitente/asunto y no hubo resultados, reintenta en todo
     // el mensaje antes de rendirse: evita falsos negativos cuando el campo
     // interpretado no era el correcto (p.ej. el término está en el asunto de
     // un correo de otro remitente).
     if (emails.length === 0 && query && field !== 'text') {
-      emails = await searchEmails(connection, { query, field: 'text' }, { limit });
+      emails = await searchEmails(connection, { query, field: 'text', days }, { limit });
     }
 
     if (emails.length === 0) {
@@ -368,7 +369,7 @@ async function handleSearchDebug(chatId, rawQuery) {
     lines.push(`*Interpretación de:* "${rawQuery}"`);
     const interpreted = await interpretSearchQuery(rawQuery, { apiKey: EMAIL_CFG.claude_api_key });
     if (interpreted) {
-      lines.push(`→ Claude: field=${interpreted.field}, query="${interpreted.query}", limit=${interpreted.limit ?? '(sin límite)'}`);
+      lines.push(`→ Claude: field=${interpreted.field}, query="${interpreted.query}", limit=${interpreted.limit ?? '(sin límite)'}, days=${interpreted.days ?? '(sin rango)'}`);
     } else {
       const fallback = parseSearchQuery(rawQuery);
       lines.push(`→ Claude no disponible o falló. Modo literal: field=${fallback.field}, query="${fallback.query}"`);
@@ -1449,7 +1450,7 @@ app.post('/email-webhook', async (req, res) => {
     if (!query) {
       await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
         chat_id: chatId,
-        text: '🔍 Uso: `/buscar <texto>`\n\nEjemplos:\n• /buscar factura selava\n• /buscar de:mapfre\n• /buscar asunto:presupuesto',
+        text: '🔍 Uso: `/buscar <texto>`\n\nEjemplos:\n• /buscar factura selava\n• /buscar de José Roca\n• /buscar de Jerónimo que mencione a Carlos Roca\n• /buscar de Mapfre del último mes\n• /buscar de:mapfre (sintaxis literal también funciona)',
         parse_mode: 'Markdown',
       }).catch(() => {});
       return;

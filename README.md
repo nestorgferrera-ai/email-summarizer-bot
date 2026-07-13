@@ -18,12 +18,17 @@ El bot de email entiende el comando `/buscar` en lenguaje natural — usa la API
 interpretar la frase (remitente, asunto, cuántos resultados quieres) antes de buscar:
 
 ```
-/buscar factura selava                     → busca "factura" y "selava" en todo el mensaje
-/buscar de José Roca                       → busca correos de José Roca (remitente)
-/buscar de José Roca, los últimos 5        → busca de José Roca, máximo 5 resultados
-/buscar asunto presupuesto                 → busca por asunto
-/buscar de:mapfre                          → también funciona con la sintaxis literal de:/asunto:
+/buscar factura selava                          → busca "factura" y "selava" en todo el mensaje
+/buscar de José Roca                            → busca correos de José Roca (remitente)
+/buscar de José Roca, los últimos 5             → busca de José Roca, máximo 5 resultados
+/buscar de Jerónimo que mencione a Carlos Roca  → combina remitente + contenido
+/buscar de Mapfre del último mes                → limita la búsqueda a un rango de tiempo
+/buscar asunto presupuesto                      → busca por asunto
+/buscar de:mapfre                               → también funciona con la sintaxis literal de:/asunto:
 ```
+
+Rangos de tiempo admitidos: "hoy", "ayer", "última semana", "último mes", "últimos N días/meses",
+"último año", etc.
 
 Devuelve hasta 15 resultados por defecto (asunto, remitente, fecha y una vista previa), más
 recientes primero. Si Claude no está disponible (o falla la interpretación), el bot cae de vuelta
