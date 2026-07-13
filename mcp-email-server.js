@@ -59,9 +59,16 @@ server.registerTool(
   async ({ query, days, limit = 15 }) => {
     const { query: parsedQuery, field } = parseSearchQuery(query);
 
-    const emails = await withImapConnection(connection =>
-      searchEmails(connection, { query: parsedQuery, field, days: days || null }, { limit })
-    );
+    const emails = await withImapConnection(async connection => {
+      const results = await searchEmails(connection, { query: parsedQuery, field, days: days || null }, { limit });
+      // Si se buscó por remitente/asunto y no hubo resultados, reintenta en
+      // todo el mensaje: el término puede estar en una parte distinta a la
+      // que se asumió (p.ej. en el asunto de un correo de otro remitente).
+      if (results.length === 0 && field !== 'text') {
+        return searchEmails(connection, { query: parsedQuery, field: 'text', days: days || null }, { limit });
+      }
+      return results;
+    });
 
     if (emails.length === 0) {
       return { content: [{ type: 'text', text: `No se encontraron correos para "${query}".` }] };
