@@ -228,7 +228,7 @@ Formato ejemplo:
         'x-api-key': CONFIG.claude_api_key,
         'anthropic-version': '2023-06-01'
       },
-      timeout: 30000
+      timeout: 60000
     });
 
     if (response.data.stop_reason === 'max_tokens') {
