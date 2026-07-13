@@ -5,7 +5,6 @@
 
 const express = require('express');
 const cron = require('node-cron');
-const ImapSimple = require('imap-simple');
 const { simpleParser } = require('mailparser');
 const { google } = require('googleapis');
 const axios = require('axios');
@@ -14,6 +13,13 @@ const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const { runEmailAnalysisAndDrafts, processIAFolder } = require('./email-analysis-drafts');
+const {
+  connectToImap,
+  fetchEmails,
+  parseSearchQuery,
+  buildSearchCriteria,
+  searchEmails,
+} = require('./lib/imap-client');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -94,68 +100,14 @@ async function withRetry(fn, retries = 3, delayMs = 1000) {
 // EMAIL BOT — IMAP
 // ============================================================================
 async function connectToIonos() {
-  const config = {
-    imap: {
-      user: EMAIL_CFG.ionos_email,
-      password: EMAIL_CFG.ionos_password,
-      host: EMAIL_CFG.ionos_imap_host,
-      port: EMAIL_CFG.ionos_imap_port,
-      tls: true,
-      authTimeout: 10000,
-      tlsOptions: { rejectUnauthorized: true },
-    },
-  };
-  const connection = await ImapSimple.connect(config);
+  const connection = await connectToImap({
+    user: EMAIL_CFG.ionos_email,
+    password: EMAIL_CFG.ionos_password,
+    host: EMAIL_CFG.ionos_imap_host,
+    port: EMAIL_CFG.ionos_imap_port,
+  });
   console.log('✅ Conectado a Ionos IMAP');
   return connection;
-}
-
-async function fetchEmails(connection, { days = null, last = 50 } = {}) {
-  await connection.openBox('INBOX', false);
-
-  let searchCriteria = ['ALL'];
-  let cutoff = null;
-
-  if (days) {
-    cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const sinceDate = `${cutoff.getDate()}-${months[cutoff.getMonth()]}-${cutoff.getFullYear()}`;
-    searchCriteria = [['SINCE', sinceDate]];
-  }
-
-  const fetchOptions = { bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)', struct: true };
-  const allMessages = await connection.search(searchCriteria, fetchOptions);
-  const messages = days ? allMessages : allMessages.slice(Math.max(0, allMessages.length - last));
-
-  const emails = [];
-  for (let msg of messages) {
-    try {
-      const from    = msg.headers?.from?.[0]    || 'Desconocido';
-      const subject = msg.headers?.subject?.[0] || '(sin asunto)';
-      const dateStr = msg.headers?.date?.[0]    || new Date().toISOString();
-      let date = new Date(dateStr);
-      if (isNaN(date.getTime())) date = new Date();
-
-      let preview = '';
-      try {
-        const parts = ImapSimple.getParts(msg.attributes.struct);
-        for (let part of parts) {
-          if (part.type === 'text') {
-            const partData = await connection.getPartData(msg, part);
-            preview = partData.toString().substring(0, 200).replace(/\n/g, ' ');
-            break;
-          }
-        }
-      } catch { preview = '(no se pudo obtener preview)'; }
-
-      emails.push({ from, subject, preview: preview || '(sin contenido)', date, uid: msg.attributes.uid });
-    } catch (err) {
-      console.log(`⚠️ Error procesando correo: ${err.message}`);
-    }
-  }
-
-  const filtered = cutoff ? emails.filter(e => e.date >= cutoff) : emails;
-  return filtered.sort((a, b) => b.date - a.date);
 }
 
 async function summarizeWithClaude(emails, tipo = 'diario') {
@@ -321,6 +273,35 @@ async function sendWeeklyEmailSummary() {
   } catch (error) {
     console.error('❌ Error en resumen semanal:', error.message);
     try { await sendEmailTelegram(`❌ Error en resumen semanal:\n\`\`\`\n${error.message}\n\`\`\``); } catch {}
+  } finally {
+    if (connection) { try { await connection.end(); } catch {} }
+  }
+}
+
+async function handleEmailSearch(chatId, rawQuery) {
+  let connection;
+  try {
+    const { query, field } = parseSearchQuery(rawQuery);
+    connection = await withRetry(() => connectToIonos());
+    const criteria = buildSearchCriteria(query, field);
+    const emails = await searchEmails(connection, criteria, { limit: 15 });
+
+    if (emails.length === 0) {
+      await sendTelegramChunks(`🔍 No se encontraron correos para: "${rawQuery}"`, chatId);
+      return;
+    }
+
+    const lines = emails.map((e, i) => {
+      const dateStr = e.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const timeStr = e.date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+      return `${i + 1}. 📩 *${e.subject}*\n   De: ${e.from}\n   🗓 ${dateStr} ${timeStr}\n   _${e.preview}_`;
+    });
+    const header = `🔍 *Resultados para:* "${rawQuery}" (${emails.length})\n\n`;
+    await sendTelegramChunks(header + lines.join('\n\n'), chatId);
+    console.log(`✅ Búsqueda de correos completada — "${rawQuery}" (${emails.length} resultados)`);
+  } catch (error) {
+    console.error('❌ Error en búsqueda de correos:', error.message);
+    await sendTelegramChunks(`❌ Error al buscar correos:\n\`\`\`\n${error.message}\n\`\`\``, chatId);
   } finally {
     if (connection) { try { await connection.end(); } catch {} }
   }
@@ -1276,6 +1257,28 @@ async function registerLaundryCommands() {
   }
 }
 
+async function registerEmailCommands() {
+  if (!EMAIL_CFG.telegram_token) return;
+  const commands = [
+    { command: 'resumen',    description: 'Resumen de los últimos correos' },
+    { command: 'semanal',    description: 'Resumen semanal de correos' },
+    { command: 'buscar',     description: 'Buscar correos (texto, de:, asunto:)' },
+    { command: 'borradores', description: 'Analizar correos de ayer y crear borradores' },
+    { command: 'ia',         description: 'Procesar ahora la carpeta IA' },
+    { command: 'ayuda',      description: 'Ver comandos disponibles' },
+  ];
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/setMyCommands`,
+      { commands },
+      { timeout: 10000 }
+    );
+    console.log('✅ Comandos registrados — Bot Email');
+  } catch (err) {
+    console.error('❌ Error registrando comandos email:', err.message);
+  }
+}
+
 // ============================================================================
 // WEBHOOKS DE TELEGRAM
 // ============================================================================
@@ -1370,10 +1373,23 @@ app.post('/email-webhook', async (req, res) => {
         chat_id: chatId,
         text: `❌ Error carpeta IA: ${err.message}`,
       }).catch(() => {}));
+  } else if (text === '/buscar' || text.startsWith('/buscar ')) {
+    const query = text.replace(/^\/buscar\s*/i, '').trim();
+    if (!query) {
+      await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+        chat_id: chatId,
+        text: '🔍 Uso: `/buscar <texto>`\n\nEjemplos:\n• /buscar factura selava\n• /buscar de:mapfre\n• /buscar asunto:presupuesto',
+        parse_mode: 'Markdown',
+      }).catch(() => {});
+      return;
+    }
+    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`,
+      { chat_id: chatId, text: `🔍 Buscando "${query}"...` }).catch(() => {});
+    await handleEmailSearch(chatId, query);
   } else if (text === '/ayuda') {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
       chat_id: chatId,
-      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda',
+      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/buscar <texto> — Buscar correos (de: / asunto: opcional)\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda',
       parse_mode: 'Markdown',
     }).catch(() => {});
   }
@@ -1422,6 +1438,7 @@ app.listen(PORT, async () => {
   console.log('   📧 Email Summarizer Bot');
   console.log('   🧺 Laundry Bot — Albaranes Selava\n');
   await registerWebhooks();
+  await registerEmailCommands();
   await registerLaundryCommands();
 });
 

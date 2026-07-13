@@ -8,7 +8,72 @@ Resume automático de correos Ionos enviados por Telegram cada mañana a las 07:
 - ✅ Resume con Claude API
 - ✅ Envía por Telegram a las 07:00 (horario España)
 - ✅ Busca correos desde las 07:00 del día anterior hasta las 07:00 del día actual
+- ✅ Comando `/buscar` en Telegram para buscar correos por texto, remitente o asunto
+- ✅ Servidor MCP (`mcp-email-server.js`) para buscar correos directamente desde Claude
 - ✅ Gratuito en Render.com
+
+## 🔍 Búsqueda de correos por Telegram
+
+El bot de email entiende el comando `/buscar`:
+
+```
+/buscar factura selava        → busca "factura selava" en todo el mensaje (TEXT)
+/buscar de:mapfre             → busca por remitente
+/buscar asunto:presupuesto    → busca por asunto
+```
+
+Devuelve hasta 15 resultados (asunto, remitente, fecha y una vista previa), más recientes primero.
+
+## 🤖 Servidor MCP — búsqueda de correo para Claude
+
+`mcp-email-server.js` expone la búsqueda de correo como servidor [MCP](https://modelcontextprotocol.io)
+para que Claude Desktop, Claude Code o cualquier cliente MCP puedan buscar correos directamente
+como una herramienta más, usando las mismas credenciales IMAP de Ionos.
+
+Herramientas expuestas:
+
+- `search_emails({ query, days?, limit? })` — busca por texto libre, o con prefijo `de:`/`asunto:`.
+- `list_recent_emails({ last?, days? })` — lista los correos más recientes.
+
+### Configuración en Claude Desktop / Claude Code
+
+Añade el servidor a tu configuración MCP (por ejemplo `claude_desktop_config.json` o vía `claude mcp add`):
+
+```json
+{
+  "mcpServers": {
+    "email-search": {
+      "command": "node",
+      "args": ["/ruta/absoluta/a/email-summarizer-bot/mcp-email-server.js"],
+      "env": {
+        "IONOS_EMAIL": "tu-correo@ionos.es",
+        "IONOS_PASSWORD": "tu-password",
+        "IONOS_IMAP_HOST": "imap.ionos.es",
+        "IONOS_IMAP_PORT": "993"
+      }
+    }
+  }
+}
+```
+
+Con Claude Code también puedes registrarlo con:
+
+```bash
+claude mcp add email-search -- node /ruta/absoluta/a/email-summarizer-bot/mcp-email-server.js
+```
+
+(asegúrate de definir `IONOS_EMAIL` / `IONOS_PASSWORD` en el entorno donde se lanza Claude, o en un `.env`
+junto al proyecto). Una vez conectado, puedes pedirle a Claude cosas como *"busca en mi correo la factura
+de Selava de este mes"* y usará la herramienta `search_emails` automáticamente.
+
+Para probarlo manualmente sin un cliente MCP:
+
+```bash
+npm run start:mcp
+```
+
+El servidor se comunica por stdio siguiendo el protocolo MCP; no tiene sentido ejecutarlo suelto en una
+terminal interactiva, está pensado para que lo lance un cliente MCP.
 
 ## 📋 Requisitos previos
 
