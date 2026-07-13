@@ -19,6 +19,7 @@ const {
   parseSearchQuery,
   searchEmails,
 } = require('./lib/imap-client');
+const { interpretSearchQuery } = require('./lib/search-intent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -283,9 +284,19 @@ async function sendWeeklyEmailSummary() {
 async function handleEmailSearch(chatId, rawQuery) {
   let connection;
   try {
-    const { query, field } = parseSearchQuery(rawQuery);
+    // Interpreta la frase en lenguaje natural con Claude (p.ej. "de José Roca,
+    // los últimos 5 correos" → { field: 'from', query: 'José Roca', limit: 5 }).
+    // Si falla o no hay CLAUDE_API_KEY, cae al parser literal de:/asunto:.
+    const interpreted = await interpretSearchQuery(rawQuery, {
+      apiKey: EMAIL_CFG.claude_api_key,
+    });
+    const { query, field } = interpreted || parseSearchQuery(rawQuery);
+    const limit = interpreted?.limit ? Math.min(interpreted.limit, 30) : 15;
+
     connection = await withRetry(() => connectToIonos());
-    const emails = await searchEmails(connection, { query, field }, { limit: 15 });
+    const emails = query
+      ? await searchEmails(connection, { query, field }, { limit })
+      : await fetchEmails(connection, { last: limit });
 
     if (emails.length === 0) {
       await sendTelegramChunks(`🔍 No se encontraron correos para: "${rawQuery}"`, chatId);
@@ -297,7 +308,9 @@ async function handleEmailSearch(chatId, rawQuery) {
       const timeStr = e.date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
       return `${i + 1}. 📩 *${e.subject}*\n   De: ${e.from}\n   🗓 ${dateStr} ${timeStr}\n   _${e.preview}_`;
     });
-    const header = `🔍 *Resultados para:* "${rawQuery}" (${emails.length})\n\n`;
+    const header = query
+      ? `🔍 *Resultados para:* "${rawQuery}" (${emails.length})\n\n`
+      : `📬 *Últimos ${emails.length} correos*\n\n`;
     await sendTelegramChunks(header + lines.join('\n\n'), chatId);
     console.log(`✅ Búsqueda de correos completada — "${rawQuery}" (${emails.length} resultados)`);
   } catch (error) {
