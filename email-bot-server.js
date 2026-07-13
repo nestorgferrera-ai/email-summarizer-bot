@@ -221,7 +221,7 @@ Formato ejemplo:
   return withRetry(async () => {
     const response = await axios.post('https://api.anthropic.com/v1/messages', {
       model: CONFIG.claude_model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }]
     }, {
       headers: {
@@ -231,6 +231,9 @@ Formato ejemplo:
       timeout: 30000
     });
 
+    if (response.data.stop_reason === 'max_tokens') {
+      console.warn(`⚠️ Resumen ${tipo} cortado por max_tokens — considera subir el límite o reducir el nº de correos`);
+    }
     const summary = response.data.content[0].text;
     console.log(`✅ Resumen ${tipo} generado por Claude`);
     return summary;
