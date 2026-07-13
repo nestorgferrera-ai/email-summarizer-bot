@@ -17,7 +17,6 @@ const {
   connectToImap,
   fetchEmails,
   parseSearchQuery,
-  buildSearchCriteria,
   searchEmails,
 } = require('./lib/imap-client');
 
@@ -283,8 +282,7 @@ async function handleEmailSearch(chatId, rawQuery) {
   try {
     const { query, field } = parseSearchQuery(rawQuery);
     connection = await withRetry(() => connectToIonos());
-    const criteria = buildSearchCriteria(query, field);
-    const emails = await searchEmails(connection, criteria, { limit: 15 });
+    const emails = await searchEmails(connection, { query, field }, { limit: 15 });
 
     if (emails.length === 0) {
       await sendTelegramChunks(`🔍 No se encontraron correos para: "${rawQuery}"`, chatId);

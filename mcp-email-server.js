@@ -15,7 +15,6 @@ const {
   connectToImap,
   fetchEmails,
   parseSearchQuery,
-  buildSearchCriteria,
   searchEmails,
 } = require('./lib/imap-client');
 
@@ -59,9 +58,10 @@ server.registerTool(
   },
   async ({ query, days, limit = 15 }) => {
     const { query: parsedQuery, field } = parseSearchQuery(query);
-    const criteria = buildSearchCriteria(parsedQuery, field, { days: days || null });
 
-    const emails = await withImapConnection(connection => searchEmails(connection, criteria, { limit }));
+    const emails = await withImapConnection(connection =>
+      searchEmails(connection, { query: parsedQuery, field, days: days || null }, { limit })
+    );
 
     if (emails.length === 0) {
       return { content: [{ type: 'text', text: `No se encontraron correos para "${query}".` }] };
