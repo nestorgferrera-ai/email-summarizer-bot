@@ -19,6 +19,8 @@ const {
   fetchEmails,
   parseSearchQuery,
   searchEmails,
+  findFolderByName,
+  moveMessageToFolder,
 } = require('./lib/imap-client');
 const { interpretSearchQuery } = require('./lib/search-intent');
 
@@ -238,6 +240,30 @@ async function sendTelegramChunks(fullMessage, chatId = null) {
   return sent;
 }
 
+// Igual que sendTelegramChunks pero para un único mensaje que puede llevar
+// extras (p.ej. reply_markup con botones inline); no se trocea porque está
+// pensado para textos cortos como una tarjeta de resultado de búsqueda.
+async function sendTelegramMessage(chatId, text, extra = {}) {
+  try {
+    await withRetry(async () => {
+      await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+        chat_id: chatId, text, parse_mode: 'Markdown', ...extra,
+      }, { timeout: 15000 });
+    });
+  } catch (error) {
+    console.log(`⚠️ Fallo enviando mensaje en Markdown, reintentando en texto plano: ${error.message}`);
+    try {
+      await withRetry(async () => {
+        await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+          chat_id: chatId, text, ...extra,
+        }, { timeout: 15000 });
+      });
+    } catch (plainError) {
+      console.error('❌ No se pudo enviar el mensaje:', plainError.message);
+    }
+  }
+}
+
 async function sendEmailTelegram(message, chatId = null) {
   const now = new Date();
   const dateStr = now.toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
@@ -313,20 +339,44 @@ async function handleEmailSearch(chatId, rawQuery) {
       return;
     }
 
-    const lines = emails.map((e, i) => {
-      const dateStr = e.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
-      const timeStr = e.date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-      return `${i + 1}. 📩 *${e.subject}*\n   De: ${e.from}\n   🗓 ${dateStr} ${timeStr}\n   _${e.preview}_`;
-    });
     const unreadTag = unread ? ' 📩 sin leer' : '';
     const header = query
-      ? `🔍 *Resultados para:* "${rawQuery}"${unreadTag} (${emails.length})\n\n`
-      : `📬 *Últimos ${emails.length} correos${unreadTag}*\n\n`;
-    await sendTelegramChunks(header + lines.join('\n\n'), chatId);
+      ? `🔍 *Resultados para:* "${rawQuery}"${unreadTag} (${emails.length})`
+      : `📬 *Últimos ${emails.length} correos${unreadTag}*`;
+    await sendTelegramChunks(header, chatId);
+
+    for (const [i, e] of emails.entries()) {
+      const dateStr = e.date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const timeStr = e.date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+      const text = `${i + 1}. 📩 *${e.subject}*\n   De: ${e.from}\n   🗓 ${dateStr} ${timeStr}\n   _${e.preview}_`;
+      await sendTelegramMessage(chatId, text, {
+        reply_markup: { inline_keyboard: [[{ text: '📥 Mover a IA', callback_data: `move_ia_${e.uid}` }]] },
+      });
+    }
     console.log(`✅ Búsqueda de correos completada — "${rawQuery}" (${emails.length} resultados)`);
   } catch (error) {
     console.error('❌ Error en búsqueda de correos:', error.message);
     await sendTelegramChunks(`❌ Error al buscar correos:\n\`\`\`\n${error.message}\n\`\`\``, chatId);
+  } finally {
+    if (connection) { try { await connection.end(); } catch {} }
+  }
+}
+
+async function handleMoveToIA(chatId, uid) {
+  let connection;
+  try {
+    connection = await withRetry(() => connectToIonos());
+    await connection.openBox('INBOX', false);
+    const iaFolder = await findFolderByName(connection, 'IA', ['INBOX.IA', 'INBOX/IA', 'IA']);
+    if (!iaFolder) {
+      await sendTelegramChunks('⚠️ No se encontró la carpeta *IA* en el buzón. Créala en tu cliente de correo.', chatId);
+      return;
+    }
+    await moveMessageToFolder(connection, uid, iaFolder);
+    await sendTelegramChunks('✅ Correo movido a la carpeta IA. Ejecuta /ia cuando quieras generar el borrador.', chatId);
+  } catch (error) {
+    console.error('❌ Error moviendo correo a IA:', error.message);
+    await sendTelegramChunks(`❌ Error moviendo el correo a IA:\n\`\`\`\n${error.message}\n\`\`\``, chatId);
   } finally {
     if (connection) { try { await connection.end(); } catch {} }
   }
@@ -1361,7 +1411,7 @@ async function registerWebhooks() {
   // Webhook del bot de email
   try {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/setWebhook`,
-      { url: `${EMAIL_CFG.app_url}/email-webhook`, allowed_updates: ['message'] }, { timeout: 10000 });
+      { url: `${EMAIL_CFG.app_url}/email-webhook`, allowed_updates: ['message', 'callback_query'] }, { timeout: 10000 });
     console.log(`✅ Webhook email: ${EMAIL_CFG.app_url}/email-webhook`);
   } catch (err) { console.error('❌ Error webhook email:', err.message); }
 
@@ -1400,6 +1450,20 @@ app.get('/', (req, res) => res.json({
 // Webhook bot de email
 app.post('/email-webhook', async (req, res) => {
   res.sendStatus(200);
+
+  const callbackQuery = req.body?.callback_query;
+  if (callbackQuery) {
+    const chatId = callbackQuery.message.chat.id.toString();
+    if (chatId !== EMAIL_CFG.telegram_chat_id) return;
+    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/answerCallbackQuery`,
+      { callback_query_id: callbackQuery.id, text: '⏳ Moviendo a la carpeta IA...' }, { timeout: 5000 }).catch(() => {});
+    if (callbackQuery.data?.startsWith('move_ia_')) {
+      const uid = parseInt(callbackQuery.data.slice('move_ia_'.length), 10);
+      if (!isNaN(uid)) await handleMoveToIA(chatId, uid);
+    }
+    return;
+  }
+
   const message = req.body?.message;
   if (!message) return;
   const text = (message.text || '').trim();
@@ -1465,7 +1529,7 @@ app.post('/email-webhook', async (req, res) => {
   } else if (text === '/ayuda') {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
       chat_id: chatId,
-      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/buscar <texto> — Buscar correos (de: / asunto: opcional)\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda',
+      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/buscar <texto> — Buscar correos (de: / asunto: opcional); cada resultado trae un botón para moverlo a la carpeta IA\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda',
       parse_mode: 'Markdown',
     }).catch(() => {});
   }

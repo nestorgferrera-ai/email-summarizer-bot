@@ -11,6 +11,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const ImapSimple = require('imap-simple');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
+const { findFolderByName } = require('./lib/imap-client');
 
 // ============================================================================
 // CLIENTE ANTHROPIC
@@ -597,33 +598,10 @@ async function runEmailAnalysisAndDrafts() {
 // CARPETA IA — Correos movidos manualmente por el usuario
 // ============================================================================
 
-// Busca 'IA' recursivamente usando el delimiter real del servidor IMAP
-function findBoxPath(boxes, targetName, prefix) {
-  for (const [name, box] of Object.entries(boxes || {})) {
-    const sep      = box.delimiter || '.';
-    const fullPath = prefix ? `${prefix}${sep}${name}` : name;
-    if (name === targetName) return fullPath;
-    const child = findBoxPath(box.children, targetName, fullPath);
-    if (child) return child;
-  }
-  return null;
-}
-
 async function findIAFolder(connection) {
-  try {
-    const boxes = await connection.getBoxes();
-    const found  = findBoxPath(boxes, 'IA', '');
-    if (found) { console.log(`📁 Carpeta IA: ${found}`); return found; }
-  } catch (_) {}
-  // Fallback: probar rutas habituales directamente
-  for (const name of ['INBOX.IA', 'INBOX/IA', 'IA']) {
-    try {
-      await connection.openBox(name, false);
-      console.log(`📁 Carpeta IA (fallback): ${name}`);
-      return name;
-    } catch (_) {}
-  }
-  return null;
+  const found = await findFolderByName(connection, 'IA', ['INBOX.IA', 'INBOX/IA', 'IA']);
+  if (found) console.log(`📁 Carpeta IA: ${found}`);
+  return found;
 }
 
 async function processIAFolder() {

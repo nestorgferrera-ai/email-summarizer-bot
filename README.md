@@ -36,6 +36,13 @@ Devuelve hasta 15 resultados por defecto (asunto, remitente, fecha y una vista p
 recientes primero. Si Claude no está disponible (o falla la interpretación), el bot cae de vuelta
 al modo literal con los prefijos `de:`/`asunto:`.
 
+Cada resultado de `/buscar` se envía como un mensaje individual con un botón **📥 Mover a IA**
+debajo. Al pulsarlo, el correo se mueve por IMAP de la bandeja de entrada a la carpeta **IA**
+(usando `MOVE` si el servidor lo soporta, o `COPY` + borrado si no) — así no hace falta entrar al
+cliente de correo para arrastrarlo manualmente. El movimiento no genera el borrador automáticamente:
+usa `/ia` después para que Claude analice la carpeta IA y redacte la respuesta, igual que si lo
+hubieras movido a mano.
+
 ## 🤖 Servidor MCP — búsqueda de correo para Claude
 
 `mcp-email-server.js` expone la búsqueda de correo como servidor [MCP](https://modelcontextprotocol.io)
