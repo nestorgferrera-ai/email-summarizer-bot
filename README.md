@@ -14,15 +14,20 @@ Resume automático de correos Ionos enviados por Telegram cada mañana a las 07:
 
 ## 🔍 Búsqueda de correos por Telegram
 
-El bot de email entiende el comando `/buscar`:
+El bot de email entiende el comando `/buscar` en lenguaje natural — usa la API de Claude para
+interpretar la frase (remitente, asunto, cuántos resultados quieres) antes de buscar:
 
 ```
-/buscar factura selava        → busca "factura selava" en todo el mensaje (TEXT)
-/buscar de:mapfre             → busca por remitente
-/buscar asunto:presupuesto    → busca por asunto
+/buscar factura selava                     → busca "factura" y "selava" en todo el mensaje
+/buscar de José Roca                       → busca correos de José Roca (remitente)
+/buscar de José Roca, los últimos 5        → busca de José Roca, máximo 5 resultados
+/buscar asunto presupuesto                 → busca por asunto
+/buscar de:mapfre                          → también funciona con la sintaxis literal de:/asunto:
 ```
 
-Devuelve hasta 15 resultados (asunto, remitente, fecha y una vista previa), más recientes primero.
+Devuelve hasta 15 resultados por defecto (asunto, remitente, fecha y una vista previa), más
+recientes primero. Si Claude no está disponible (o falla la interpretación), el bot cae de vuelta
+al modo literal con los prefijos `de:`/`asunto:`.
 
 ## 🤖 Servidor MCP — búsqueda de correo para Claude
 
