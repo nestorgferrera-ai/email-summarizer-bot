@@ -159,7 +159,7 @@ Formato:
       messages: [{ role: 'user', content: prompt }],
     }, {
       headers: { 'x-api-key': EMAIL_CFG.claude_api_key, 'anthropic-version': '2023-06-01' },
-      timeout: 30000,
+      timeout: 60000,
     });
     if (response.data.stop_reason === 'max_tokens') {
       console.warn(`⚠️ Resumen ${tipo} cortado por max_tokens — considera subir el límite o reducir el nº de correos`);
