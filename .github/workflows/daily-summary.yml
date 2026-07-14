@@ -1,0 +1,37 @@
+name: Resumen diario de correos
+
+# Dispara el resumen de las 07:00 (hora de Canarias) llamando al endpoint
+# público /trigger del servidor en Render, sin depender de ningún script
+# corriendo en un ordenador local.
+#
+# Canarias cambia de huso horario con el DST (WET/UTC+0 en invierno,
+# WEST/UTC+1 en verano), así que se programan dos horarios en UTC (uno
+# para cada caso) y un paso previo descarta la ejecución que no
+# corresponda a las 07:00 en hora local de Canarias.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # 07:00 Canarias en horario de verano (WEST, UTC+1)
+    - cron: '0 7 * * *'  # 07:00 Canarias en horario de invierno (WET, UTC+0)
+  workflow_dispatch: {}
+
+jobs:
+  trigger-summary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comprobar hora local en Canarias
+        id: check
+        run: |
+          hour=$(TZ="Atlantic/Canary" date +%H)
+          echo "Hora actual en Canarias: $hour"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "$hour" = "07" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Disparar resumen diario
+        if: steps.check.outputs.run == 'true'
+        run: |
+          curl -sf -X POST https://email-summarizer-bot.onrender.com/trigger \
+            -H "Content-Type: application/json"
