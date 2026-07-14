@@ -51,8 +51,8 @@ como una herramienta más, usando las mismas credenciales IMAP de Ionos.
 
 Herramientas expuestas:
 
-- `search_emails({ query, days?, limit? })` — busca por texto libre, o con prefijo `de:`/`asunto:`.
-- `list_recent_emails({ last?, days? })` — lista los correos más recientes.
+- `search_emails({ query, days?, unread?, limit? })` — busca por texto libre, o con prefijo `de:`/`asunto:`.
+- `list_recent_emails({ last?, days?, unread? })` — lista los correos más recientes.
 
 ### Configuración en Claude Desktop / Claude Code
 
