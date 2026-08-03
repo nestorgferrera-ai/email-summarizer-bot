@@ -146,6 +146,12 @@ async function sendMessage(chatId, text, extra = {}) {
   }
 }
 
+// Neutraliza los caracteres que Telegram interpreta como Markdown, para que un
+// nombre o alias con guiones bajos o asteriscos no rompa el envío del mensaje.
+function escapeMarkdown(str) {
+  return String(str).replace(/([_*`\[\]])/g, '\\$1');
+}
+
 // ============================================================================
 // TELEGRAM: REGISTRAR COMANDOS (menú botón "/" en la barra de escritura)
 // ============================================================================
@@ -156,6 +162,7 @@ async function registerCommands() {
     { command: 'diario',   description: 'Registrar envío diario a Selava' },
     { command: 'resumen',  description: 'Generar albarán de envíos por período' },
     { command: 'cancelar', description: 'Cancelar el registro en curso' },
+    { command: 'miid',     description: 'Ver mi ID de chat (para dar de alta a un usuario)' },
     { command: 'ayuda',    description: 'Ver comandos disponibles' },
   ];
   try {
@@ -393,14 +400,66 @@ async function startFlow(chatId, flow) {
   await sendMessage(chatId, prompt);
 }
 
-async function handleMessage(chatId, text, fromName) {
+// Responde a /miid con el ID de chat que hay que añadir a ALLOWED_CHAT_IDS.
+// Se resuelve ANTES del control de acceso: un integrante nuevo todavía no está
+// autorizado, y es precisamente él quien necesita consultar su ID.
+async function sendChatId(chatId, fromName, meta = {}) {
+  const { from, chat } = meta;
+  const autorizado =
+    CONFIG.allowed_chat_ids.length === 0 || CONFIG.allowed_chat_ids.includes(String(chatId));
+
+  const lineas = [
+    '🆔 *Tu ID de chat*',
+    '',
+    `\`${chatId}\``,
+    '',
+    `👤 ${escapeMarkdown(fromName)}${from?.username ? ` (@${escapeMarkdown(from.username)})` : ''}`,
+  ];
+
+  // En un grupo el ID que da acceso es el del grupo, no el de la persona.
+  if (chat?.type && chat.type !== 'private') {
+    lineas.push(
+      `👥 Este es el ID del *grupo*. Para dar acceso a una persona en su chat privado, ` +
+      `que escriba /miid hablando directamente con el bot.`
+    );
+    if (from?.id) lineas.push(`🙋 Tu ID de usuario: \`${from.id}\``);
+  }
+
+  lineas.push('');
+  lineas.push(
+    autorizado
+      ? '✅ Ya tienes acceso al bot.'
+      : '⛔ Todavía no tienes acceso. Envía este número al administrador.'
+  );
+  lineas.push('');
+  lineas.push(
+    '*Para dar de alta a un nuevo integrante:*\n' +
+    '1️⃣ Que abra este chat con el bot y escriba /miid\n' +
+    '2️⃣ Que envíe el número al administrador\n' +
+    '3️⃣ El administrador lo añade a `ALLOWED_CHAT_IDS` (separados por comas) y reinicia el bot'
+  );
+
+  await sendMessage(chatId, lineas.join('\n'));
+}
+
+async function handleMessage(chatId, text, fromName, meta = {}) {
+  // En grupos Telegram envía "/comando@NombreDelBot": quitamos el sufijo.
+  const t = text.trim().replace(/^(\/[a-zA-Z0-9_]+)@[\w]+/, '$1');
+
+  // /miid queda fuera del control de acceso a propósito (ver sendChatId).
+  if (t.toLowerCase() === '/miid' || t.toLowerCase() === '/id') {
+    await sendChatId(chatId, fromName, meta);
+    return;
+  }
+
   if (CONFIG.allowed_chat_ids.length > 0 && !CONFIG.allowed_chat_ids.includes(String(chatId))) {
-    await sendMessage(chatId, '⛔ No tienes acceso a este bot. Contacta con el administrador.');
+    await sendMessage(chatId,
+      '⛔ No tienes acceso a este bot. Escribe /miid para ver tu ID y envíaselo al administrador.'
+    );
     return;
   }
 
   const session = getSession(chatId);
-  const t = text.trim();
 
   // ---- COMANDOS GLOBALES ----
   if (t === '/start' || t === '/inicio') {
@@ -412,6 +471,7 @@ async function handleMessage(chatId, text, fromName) {
       `/diario — Registrar envío de ropa a Selava\n` +
       `/resumen — Generar albarán de envíos por período\n` +
       `/cancelar — Cancelar registro en curso\n` +
+      `/miid — Ver mi ID de chat (para dar de alta a un usuario)\n` +
       `/ayuda — Ver esta ayuda`
     );
     return;
@@ -423,8 +483,11 @@ async function handleMessage(chatId, text, fromName) {
       `/nuevo — Registrar recepción de ropa de Selava\n` +
       `/diario — Registrar envío diario de ropa a Selava\n` +
       `/resumen — Generar albarán por período (Mar-Jue / Vie-Lun)\n` +
-      `/cancelar — Cancelar el registro en curso\n\n` +
-      `Escribe *0* si no hay unidades de algún artículo.`
+      `/cancelar — Cancelar el registro en curso\n` +
+      `/miid — Ver mi ID de chat\n\n` +
+      `Escribe *0* si no hay unidades de algún artículo.\n\n` +
+      `*¿Añadir un integrante nuevo?* Que abra el chat con el bot, escriba /miid ` +
+      `y envíe el número al administrador para darle acceso.`
     );
     return;
   }
@@ -656,7 +719,7 @@ app.post('/webhook', async (req, res) => {
   const update = req.body;
   if (update.message) {
     const { chat, text, from } = update.message;
-    await handleMessage(chat.id, text || '', from?.first_name || from?.username || 'Usuario');
+    await handleMessage(chat.id, text || '', from?.first_name || from?.username || 'Usuario', { from, chat });
   }
   if (update.callback_query) {
     const cb = update.callback_query;

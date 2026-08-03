@@ -338,14 +338,64 @@ function buildSummaryText(responsable, data) {
   return `📋 *Resumen del envío diario*\n\n👤 Responsable: *${responsable}*\n\n${lines.join('\n')}\n\n¿Confirmas el envío?`;
 }
 
-async function handleMessage(chatId, text, fromName) {
+// Ver la explicación en laundry-bot.js: /miid se responde antes del control de
+// acceso porque quien lo necesita es justamente el integrante aún no autorizado.
+async function sendChatId(chatId, fromName, meta = {}) {
+  const { from, chat } = meta;
+  const autorizado =
+    CONFIG.allowed_chat_ids.length === 0 || CONFIG.allowed_chat_ids.includes(String(chatId));
+  const nombre = String(fromName).replace(/([_*`\[\]])/g, '\\$1');
+
+  const lineas = [
+    '🆔 *Tu ID de chat*',
+    '',
+    `\`${chatId}\``,
+    '',
+    `👤 ${nombre}`,
+  ];
+
+  if (chat?.type && chat.type !== 'private') {
+    lineas.push(
+      `👥 Este es el ID del *grupo*. Para dar acceso a una persona en su chat privado, ` +
+      `que escriba /miid hablando directamente con el bot.`
+    );
+    if (from?.id) lineas.push(`🙋 Tu ID de usuario: \`${from.id}\``);
+  }
+
+  lineas.push('');
+  lineas.push(
+    autorizado
+      ? '✅ Ya tienes acceso al bot.'
+      : '⛔ Todavía no tienes acceso. Envía este número al administrador.'
+  );
+  lineas.push('');
+  lineas.push(
+    '*Para dar de alta a un nuevo integrante:*\n' +
+    '1️⃣ Que abra este chat con el bot y escriba /miid\n' +
+    '2️⃣ Que envíe el número al administrador\n' +
+    '3️⃣ El administrador lo añade a `ALLOWED_CHAT_IDS` (separados por comas) y reinicia el bot'
+  );
+
+  await sendMessage(chatId, lineas.join('\n'));
+}
+
+async function handleMessage(chatId, text, fromName, meta = {}) {
+  // En grupos Telegram envía "/comando@NombreDelBot": quitamos el sufijo.
+  const textTrim = text.trim().replace(/^(\/[a-zA-Z0-9_]+)@[\w]+/, '$1');
+
+  if (textTrim.toLowerCase() === '/miid' || textTrim.toLowerCase() === '/id') {
+    await sendChatId(chatId, fromName, meta);
+    return;
+  }
+
   if (CONFIG.allowed_chat_ids.length > 0 && !CONFIG.allowed_chat_ids.includes(String(chatId))) {
-    await sendMessage(chatId, '⛔ No tienes acceso a este bot. Contacta con el administrador.');
+    await sendMessage(chatId,
+      '⛔ No tienes acceso a este bot. Escribe /miid para ver tu ID y envíaselo al administrador.'
+    );
     return;
   }
 
   const session = getSession(chatId);
-  const textTrim = text.trim();
 
   // ---- COMANDOS GLOBALES ----
   if (textTrim === '/start' || textTrim === '/inicio') {
@@ -356,6 +406,7 @@ async function handleMessage(chatId, text, fromName) {
       `/nuevo — Registrar nuevo envío\n` +
       `/resumen — Generar albarán por período\n` +
       `/cancelar — Cancelar registro en curso\n` +
+      `/miid — Ver mi ID de chat (para dar de alta a un usuario)\n` +
       `/ayuda — Ver esta ayuda`
     );
     return;
@@ -367,6 +418,7 @@ async function handleMessage(chatId, text, fromName) {
       `/nuevo — Registrar envío de ropa a Selava\n` +
       `/resumen — Ver totales por período y generar albarán en Google Sheets\n` +
       `/cancelar — Cancelar el registro en curso\n` +
+      `/miid — Ver mi ID de chat (para dar de alta a un usuario)\n` +
       `/ayuda — Ver esta ayuda\n\n` +
       `Los períodos disponibles son:\n` +
       `  📅 *Martes – Jueves*\n` +
@@ -592,7 +644,12 @@ app.post('/daily-webhook', async (req, res) => {
 
   if (update.message) {
     const msg = update.message;
-    await handleMessage(msg.chat.id, msg.text || '', msg.from?.first_name || msg.from?.username || 'Usuario');
+    await handleMessage(
+      msg.chat.id,
+      msg.text || '',
+      msg.from?.first_name || msg.from?.username || 'Usuario',
+      { from: msg.from, chat: msg.chat }
+    );
   }
 
   if (update.callback_query) {
