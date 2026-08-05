@@ -1010,16 +1010,45 @@ async function startLaundryFlow(chatId, flow) {
   await laundryMsg(chatId, prompt);
 }
 
-async function handleLaundryMessage(chatId, text, fromName) {
-  const t = text.trim();
+async function handleLaundryMessage(chatId, text, fromName, meta = {}) {
+  // En grupos Telegram envía "/comando@NombreDelBot": quitamos el sufijo.
+  const t = text.trim().replace(/^(\/[a-zA-Z0-9_]+)@[\w]+/, '$1');
 
-  if (t === '/miid') {
-    await laundryMsg(chatId, `🪪 Tu Chat ID es: \`${chatId}\`\n\nPásaselo al administrador para que te añada al bot.`);
+  // /miid se responde ANTES del control de acceso a propósito: quien lo
+  // necesita es justamente el integrante que todavía no está autorizado.
+  if (t.toLowerCase() === '/miid' || t.toLowerCase() === '/id') {
+    const { from, chat } = meta;
+    const autorizado = LAUNDRY_CFG.allowed_chat_ids.length === 0 ||
+                       LAUNDRY_CFG.allowed_chat_ids.includes(String(chatId));
+    const lineas = [
+      '🪪 *Tu ID de chat*',
+      '',
+      `\`${chatId}\``,
+      '',
+      `👤 ${String(fromName).replace(/([_*`\[\]])/g, '\\$1')}`,
+    ];
+    // En un grupo el ID que da acceso es el del grupo, no el de la persona.
+    if (chat?.type && chat.type !== 'private') {
+      lineas.push('👥 Este es el ID del *grupo*. Para dar acceso a una persona ' +
+                  'en su chat privado, que escriba /miid hablando directamente con el bot.');
+      if (from?.id) lineas.push(`🙋 Tu ID de usuario: \`${from.id}\``);
+    }
+    lineas.push('');
+    lineas.push(autorizado
+      ? '✅ Ya tienes acceso al bot.'
+      : '⛔ Todavía no tienes acceso. Envía este número al administrador.');
+    lineas.push('');
+    lineas.push('*Para dar de alta a un nuevo integrante:*\n' +
+                '1️⃣ Que abra este chat con el bot y escriba /miid\n' +
+                '2️⃣ Que envíe el número al administrador\n' +
+                '3️⃣ El administrador lo añade a `ALLOWED_CHAT_IDS` y reinicia el bot');
+    await laundryMsg(chatId, lineas.join('\n'));
     return;
   }
 
   if (LAUNDRY_CFG.allowed_chat_ids.length > 0 && !LAUNDRY_CFG.allowed_chat_ids.includes(String(chatId))) {
-    await laundryMsg(chatId, '⛔ No tienes acceso a este bot. Contacta con el administrador.');
+    await laundryMsg(chatId,
+      '⛔ No tienes acceso a este bot. Escribe /miid para ver tu ID y envíaselo al administrador.');
     return;
   }
 
@@ -1035,6 +1064,7 @@ async function handleLaundryMessage(chatId, text, fromName) {
       `/semana — Ver desglose de envíos por día (última semana)\n` +
       `/resumen — Generar albarán de envíos por período\n` +
       `/cancelar — Cancelar registro en curso\n` +
+      `/miid — Ver mi ID de chat (para dar de alta a un usuario)\n` +
       `/ayuda — Ver esta ayuda`);
     return;
   }
@@ -1046,8 +1076,11 @@ async function handleLaundryMessage(chatId, text, fromName) {
       `/diario — Registrar envío diario de ropa a Selava\n` +
       `/semana — Ver desglose de envíos por día (última semana)\n` +
       `/resumen — Generar albarán por período (Mar-Jue / Vie-Lun)\n` +
-      `/cancelar — Cancelar el registro en curso\n\n` +
-      `Escribe *0* si no hay unidades de algún artículo.`);
+      `/cancelar — Cancelar el registro en curso\n` +
+      `/miid — Ver mi ID de chat (para dar de alta a un usuario)\n\n` +
+      `Escribe *0* si no hay unidades de algún artículo.\n\n` +
+      `*¿Añadir un integrante nuevo?* Que abra el chat con el bot, escriba /miid ` +
+      `y envíe el número al administrador para darle acceso.`);
     return;
   }
 
@@ -1361,6 +1394,7 @@ async function registerLaundryCommands() {
     { command: 'semana',    description: 'Ver desglose de envíos (última semana)' },
     { command: 'resumen',   description: 'Generar albarán de envíos por período' },
     { command: 'cancelar',  description: 'Cancelar el registro en curso' },
+    { command: 'miid',      description: 'Ver mi ID de chat (para dar de alta a un usuario)' },
     { command: 'ayuda',     description: 'Ver comandos disponibles' },
   ];
   try {
@@ -1541,7 +1575,7 @@ app.post('/laundry-webhook', async (req, res) => {
   const update = req.body;
   if (update.message) {
     const { chat, text, from } = update.message;
-    await handleLaundryMessage(chat.id, text || '', from?.first_name || from?.username || 'Usuario');
+    await handleLaundryMessage(chat.id, text || '', from?.first_name || from?.username || 'Usuario', { from, chat });
   }
   if (update.callback_query) {
     const cb = update.callback_query;
