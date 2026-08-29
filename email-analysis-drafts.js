@@ -12,6 +12,7 @@ const ImapSimple = require('imap-simple');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const { findFolderByName } = require('./lib/imap-client');
+const { INTENT_TYPES, DEFAULT_INTENT_TYPE, consumeIntent, describeIntent } = require('./lib/ia-intents');
 
 // ============================================================================
 // CLIENTE ANTHROPIC
@@ -329,12 +330,23 @@ async function fetchYesterdayEmails(connection) {
 // ============================================================================
 // ANALIZAR CORREO CON CLAUDE (con prompt caching en el system prompt)
 // ============================================================================
-async function analyzeEmailWithClaude(email, forceReply = false) {
+async function analyzeEmailWithClaude(email, forceReply = false, intent = null) {
+  const intentType   = (intent && INTENT_TYPES[intent.type]) ? intent.type : DEFAULT_INTENT_TYPE;
+  const intentConfig = INTENT_TYPES[intentType];
+  const comments     = (intent?.comments || '').trim();
+
   const userContent = [
     `Analiza el siguiente correo recibido en ${CONFIG.clinic_name}.`,
     forceReply
       ? `IMPORTANTE: El usuario ha movido este correo explícitamente a la carpeta IA para que se redacte una respuesta. SIEMPRE genera un borrador completo en el campo "draft", independientemente de si consideras que necesita respuesta o no.`
       : `Responde ÚNICAMENTE con el objeto JSON indicado en las instrucciones.`,
+    // El tipo de contestación lo elige el usuario en Telegram al mandar el
+    // correo a la carpeta IA; manda sobre el criterio general del prompt.
+    forceReply ? `` : null,
+    forceReply ? intentConfig.instruction : null,
+    (forceReply && intentType === 'comentarios' && comments)
+      ? [``, `INDICACIONES DE LA DIRECCIÓN:`, `---`, comments, `---`].join('\n')
+      : null,
     ``,
     `DE: ${email.from}`,
     `PARA: ${email.to}`,
@@ -344,7 +356,7 @@ async function analyzeEmailWithClaude(email, forceReply = false) {
     `---`,
     email.body || '(sin cuerpo)',
     `---`,
-  ].join('\n');
+  ].filter(line => line !== null).join('\n');
 
   const response = await withRetry(() =>
     anthropic.messages.create({
@@ -673,9 +685,16 @@ async function processIAFolder() {
           body: body.trim().substring(0, CONFIG.max_body_chars),
         };
 
-        console.log(`  📨 "${subject}" — ${from}`);
+        // Tipo de contestación elegido en Telegram al mandar el correo a IA
+        // (acuse, positiva, negativa o desarrollada según sus comentarios).
+        // Si el correo se arrastró a mano desde el cliente de correo no habrá
+        // intención guardada y se usa el acuse de recibo de siempre.
+        const intent = consumeIntent({ messageId, from, subject })
+          || { type: DEFAULT_INTENT_TYPE, comments: '' };
 
-        const analysis = await analyzeEmailWithClaude(email, true);
+        console.log(`  📨 "${subject}" — ${from} — ${describeIntent(intent.type)}`);
+
+        const analysis = await analyzeEmailWithClaude(email, true, intent);
 
         // Siempre crear borrador: el usuario lo movió a IA explícitamente
         const draftText = analysis.draft ||
@@ -700,8 +719,13 @@ async function processIAFolder() {
           });
         });
 
-        created.push({ from, subject, priority: analysis.priority || 'normal' });
-        console.log(`  ✅ Borrador creado: "${subject}"`);
+        created.push({
+          from, subject,
+          priority: analysis.priority || 'normal',
+          intent: intent.type,
+          intent_label: describeIntent(intent.type),
+        });
+        console.log(`  ✅ Borrador creado: "${subject}" (${describeIntent(intent.type)})`);
 
         await new Promise(r => setTimeout(r, 300));
 

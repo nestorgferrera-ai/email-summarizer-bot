@@ -23,6 +23,7 @@ const {
   moveMessageToFolder,
 } = require('./lib/imap-client');
 const { interpretSearchQuery } = require('./lib/search-intent');
+const { INTENT_TYPES, isValidType, setIntent, describeIntent } = require('./lib/ia-intents');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -350,7 +351,7 @@ async function handleEmailSearch(chatId, rawQuery) {
       const timeStr = e.date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
       const text = `${i + 1}. 📩 *${e.subject}*\n   De: ${e.from}\n   🗓 ${dateStr} ${timeStr}\n   _${e.preview}_`;
       await sendTelegramMessage(chatId, text, {
-        reply_markup: { inline_keyboard: [[{ text: '📥 Mover a IA', callback_data: `move_ia_${e.uid}` }]] },
+        reply_markup: { inline_keyboard: [[{ text: '🤖 IA', callback_data: `ia_menu_${e.uid}` }]] },
       });
     }
     console.log(`✅ Búsqueda de correos completada — "${rawQuery}" (${emails.length} resultados)`);
@@ -362,7 +363,69 @@ async function handleEmailSearch(chatId, rawQuery) {
   }
 }
 
-async function handleMoveToIA(chatId, uid) {
+// Correos a la espera de que el usuario escriba sus indicaciones tras elegir
+// "✍️ Según mis comentarios": chatId → { uid, messageId, created_at }.
+const pendingIAComments = new Map();
+const IA_COMMENTS_TTL_MS = 30 * 60 * 1000;
+
+// Teclado con los cuatro tipos de contestación que puede pedir el usuario
+// antes de mandar el correo a la carpeta IA.
+function buildIAIntentKeyboard(uid) {
+  return {
+    inline_keyboard: [
+      [{ text: `${INTENT_TYPES.acuse.emoji} ${INTENT_TYPES.acuse.label}`,       callback_data: `ia_set_acuse_${uid}` }],
+      [{ text: `${INTENT_TYPES.positiva.emoji} ${INTENT_TYPES.positiva.label}`, callback_data: `ia_set_positiva_${uid}` }],
+      [{ text: `${INTENT_TYPES.negativa.emoji} ${INTENT_TYPES.negativa.label}`, callback_data: `ia_set_negativa_${uid}` }],
+      [{ text: `${INTENT_TYPES.comentarios.emoji} ${INTENT_TYPES.comentarios.label}`, callback_data: `ia_set_comentarios_${uid}` }],
+    ],
+  };
+}
+
+// Sustituye el botón "🤖 IA" del resultado de búsqueda por el menú de tipos de
+// respuesta, sobre el mismo mensaje para no perder de vista de qué correo se
+// trata. Si Telegram no deja editarlo (mensaje antiguo), se manda aparte.
+async function showIAIntentMenu(chatId, messageId, uid) {
+  try {
+    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/editMessageReplyMarkup`, {
+      chat_id: chatId, message_id: messageId, reply_markup: buildIAIntentKeyboard(uid),
+    }, { timeout: 10000 });
+  } catch (error) {
+    console.log(`⚠️ No se pudo editar el teclado del mensaje ${messageId}: ${error.message}`);
+    await sendTelegramMessage(chatId, '🤖 ¿Qué tipo de contestación quieres?', {
+      reply_markup: buildIAIntentKeyboard(uid),
+    });
+  }
+}
+
+// Quita el teclado inline de un mensaje ya resuelto (para que no se pueda
+// pulsar dos veces sobre el mismo correo).
+async function clearInlineKeyboard(chatId, messageId) {
+  if (!messageId) return;
+  await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/editMessageReplyMarkup`, {
+    chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] },
+  }, { timeout: 10000 }).catch(() => {});
+}
+
+// Lee las cabeceras de un correo del INBOX por UID: hace falta el Message-ID
+// para poder asociarle el tipo de respuesta, porque al mover el correo a la
+// carpeta IA el UID cambia.
+async function readInboxHeaders(connection, uid) {
+  const messages = await connection.search([['UID', String(uid)]], {
+    bodies: 'HEADER.FIELDS (FROM SUBJECT MESSAGE-ID)',
+    markSeen: false,
+  });
+  if (!messages.length) return null;
+  const headers = extractHeaders(messages[0]);
+  return {
+    from:      headers.from?.[0] || '',
+    subject:   headers.subject?.[0] || '(sin asunto)',
+    messageId: headers['message-id']?.[0] || '',
+  };
+}
+
+// Mueve el correo a la carpeta IA dejando anotado qué contestación se quiere,
+// para que /ia redacte el borrador en ese sentido.
+async function handleMoveToIA(chatId, uid, intentType = 'acuse', comments = '') {
   let connection;
   try {
     connection = await withRetry(() => connectToIonos());
@@ -372,8 +435,22 @@ async function handleMoveToIA(chatId, uid) {
       await sendTelegramChunks('⚠️ No se encontró la carpeta *IA* en el buzón. Créala en tu cliente de correo.', chatId);
       return;
     }
+
+    const headers = await readInboxHeaders(connection, uid);
+    if (!headers) {
+      await sendTelegramChunks('⚠️ Ese correo ya no está en la bandeja de entrada (puede que se moviera antes).', chatId);
+      return;
+    }
+
+    setIntent(headers, { type: intentType, comments });
     await moveMessageToFolder(connection, uid, iaFolder);
-    await sendTelegramChunks('✅ Correo movido a la carpeta IA. Ejecuta /ia cuando quieras generar el borrador.', chatId);
+
+    const detail = comments ? `\n📝 Tus indicaciones: _${comments}_` : '';
+    await sendTelegramChunks(
+      `✅ Correo movido a la carpeta IA.\n🤖 Contestación: *${describeIntent(intentType)}*${detail}\n\nEjecuta /ia cuando quieras generar el borrador.`,
+      chatId
+    );
+    console.log(`📥 "${headers.subject}" → carpeta IA (${intentType})`);
   } catch (error) {
     console.error('❌ Error moviendo correo a IA:', error.message);
     await sendTelegramChunks(`❌ Error moviendo el correo a IA:\n\`\`\`\n${error.message}\n\`\`\``, chatId);
@@ -1489,11 +1566,58 @@ app.post('/email-webhook', async (req, res) => {
   if (callbackQuery) {
     const chatId = callbackQuery.message.chat.id.toString();
     if (chatId !== EMAIL_CFG.telegram_chat_id) return;
-    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/answerCallbackQuery`,
-      { callback_query_id: callbackQuery.id, text: '⏳ Moviendo a la carpeta IA...' }, { timeout: 5000 }).catch(() => {});
-    if (callbackQuery.data?.startsWith('move_ia_')) {
-      const uid = parseInt(callbackQuery.data.slice('move_ia_'.length), 10);
-      if (!isNaN(uid)) await handleMoveToIA(chatId, uid);
+
+    const data      = callbackQuery.data || '';
+    const messageId = callbackQuery.message.message_id;
+    const ack = (text) => axios.post(
+      `https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/answerCallbackQuery`,
+      { callback_query_id: callbackQuery.id, text }, { timeout: 5000 }
+    ).catch(() => {});
+
+    // "🤖 IA" → desplegar los cuatro tipos de contestación
+    if (data.startsWith('ia_menu_')) {
+      const uid = parseInt(data.slice('ia_menu_'.length), 10);
+      await ack('🤖 Elige el tipo de contestación');
+      if (!isNaN(uid)) await showIAIntentMenu(chatId, messageId, uid);
+      return;
+    }
+
+    // "ia_set_<tipo>_<uid>" → tipo de contestación elegido
+    if (data.startsWith('ia_set_')) {
+      const rest = data.slice('ia_set_'.length);
+      const sep  = rest.lastIndexOf('_');
+      const type = sep > 0 ? rest.slice(0, sep) : '';
+      const uid  = parseInt(rest.slice(sep + 1), 10);
+      if (!isValidType(type) || isNaN(uid)) {
+        await ack('⚠️ Opción no válida');
+        return;
+      }
+
+      // Con comentarios el correo no se mueve todavía: primero hay que esperar
+      // a que el usuario escriba qué quiere que diga la respuesta.
+      if (type === 'comentarios') {
+        await ack('✍️ Escríbeme tus indicaciones');
+        pendingIAComments.set(chatId, { uid, messageId, created_at: Date.now() });
+        await sendTelegramChunks(
+          '✍️ Escribe en el chat qué quieres que diga la contestación y desarrollaré el borrador a partir de tus indicaciones.\n\nEscribe /cancelar para dejarlo.',
+          chatId
+        );
+        return;
+      }
+
+      await ack('⏳ Moviendo a la carpeta IA...');
+      pendingIAComments.delete(chatId);
+      await clearInlineKeyboard(chatId, messageId);
+      await handleMoveToIA(chatId, uid, type);
+      return;
+    }
+
+    // Botones "📥 Mover a IA" de mensajes anteriores a los cuatro tipos:
+    // se mantienen funcionando con el acuse de recibo de siempre.
+    if (data.startsWith('move_ia_')) {
+      const uid = parseInt(data.slice('move_ia_'.length), 10);
+      await ack('⏳ Moviendo a la carpeta IA...');
+      if (!isNaN(uid)) await handleMoveToIA(chatId, uid, 'acuse');
     }
     return;
   }
@@ -1503,6 +1627,30 @@ app.post('/email-webhook', async (req, res) => {
   const text = (message.text || '').trim();
   const chatId = message.chat.id.toString();
   if (chatId !== EMAIL_CFG.telegram_chat_id) return;
+
+  // Indicaciones pedidas tras elegir "✍️ Según mis comentarios": el siguiente
+  // mensaje de texto del usuario es el contenido que debe desarrollar el
+  // borrador. Cualquier comando cancela la espera.
+  const pendingComments = pendingIAComments.get(chatId);
+  if (pendingComments) {
+    const expired = Date.now() - pendingComments.created_at > IA_COMMENTS_TTL_MS;
+    if (expired) {
+      pendingIAComments.delete(chatId);
+    } else if (/^\/cancelar\b/i.test(text)) {
+      pendingIAComments.delete(chatId);
+      await clearInlineKeyboard(chatId, pendingComments.messageId);
+      await sendTelegramChunks('❎ Cancelado. El correo se queda en la bandeja de entrada.', chatId);
+      return;
+    } else if (text.startsWith('/')) {
+      pendingIAComments.delete(chatId);
+      await sendTelegramChunks('❎ Se cancela la espera de indicaciones para la carpeta IA.', chatId);
+    } else if (text) {
+      pendingIAComments.delete(chatId);
+      await clearInlineKeyboard(chatId, pendingComments.messageId);
+      await handleMoveToIA(chatId, pendingComments.uid, 'comentarios', text);
+      return;
+    }
+  }
 
   if (text === '/resumen') {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`,
@@ -1533,8 +1681,11 @@ app.post('/email-webhook', async (req, res) => {
     }).catch(() => {});
     processIAFolder()
       .then(result => {
+        const detail = (result.items || [])
+          .map(item => `• ${item.intent_label || ''} — ${item.subject}`)
+          .join('\n');
         const msg = result.count > 0
-          ? `✅ ${result.count} borrador(es) creado(s) desde la carpeta IA.\nRevisa la carpeta Borradores.`
+          ? `✅ ${result.count} borrador(es) creado(s) desde la carpeta IA.\n${detail}\n\nRevisa la carpeta Borradores.`
           : '📭 No hay correos pendientes en la carpeta IA.';
         return axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
           chat_id: chatId, text: msg,
@@ -1563,7 +1714,7 @@ app.post('/email-webhook', async (req, res) => {
   } else if (text === '/ayuda') {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
       chat_id: chatId,
-      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/buscar <texto> — Buscar correos (de: / asunto: opcional); cada resultado trae un botón para moverlo a la carpeta IA\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda',
+      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/buscar <texto> — Buscar correos (de: / asunto: opcional); cada resultado trae un botón 🤖 IA\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda\n\n🤖 *Botón IA* — al pulsarlo eliges cómo quieres contestar:\n📨 Acuse de recibo\n✅ Respuesta positiva\n❌ Respuesta negativa\n✍️ Según mis comentarios (te pide que escribas qué decir y lo desarrolla)',
       parse_mode: 'Markdown',
     }).catch(() => {});
   }
