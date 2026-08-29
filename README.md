@@ -9,6 +9,7 @@ Resume automático de correos Ionos enviados por Telegram cada mañana a las 07:
 - ✅ Envía por Telegram a las 07:00 (horario España)
 - ✅ Busca correos desde las 07:00 del día anterior hasta las 07:00 del día actual
 - ✅ Comando `/buscar` en Telegram para buscar correos por texto, remitente o asunto
+- ✅ Botón 🤖 IA en cada resultado de `/buscar`: eliges acuse de recibo, respuesta positiva, negativa o desarrollada según tus comentarios
 - ✅ Servidor MCP (`mcp-email-server.js`) para buscar correos directamente desde Claude
 - ✅ Gratuito en Render.com
 
@@ -36,12 +37,27 @@ Devuelve hasta 15 resultados por defecto (asunto, remitente, fecha y una vista p
 recientes primero. Si Claude no está disponible (o falla la interpretación), el bot cae de vuelta
 al modo literal con los prefijos `de:`/`asunto:`.
 
-Cada resultado de `/buscar` se envía como un mensaje individual con un botón **📥 Mover a IA**
-debajo. Al pulsarlo, el correo se mueve por IMAP de la bandeja de entrada a la carpeta **IA**
-(usando `MOVE` si el servidor lo soporta, o `COPY` + borrado si no) — así no hace falta entrar al
-cliente de correo para arrastrarlo manualmente. El movimiento no genera el borrador automáticamente:
-usa `/ia` después para que Claude analice la carpeta IA y redacte la respuesta, igual que si lo
-hubieras movido a mano.
+Cada resultado de `/buscar` se envía como un mensaje individual con un botón **🤖 IA** debajo.
+Al pulsarlo el bot no mueve el correo directamente: primero pregunta **qué tipo de contestación**
+quieres, con cuatro opciones:
+
+| Opción | Qué borrador redacta Claude |
+|---|---|
+| 📨 **Acuse de recibo** | Confirma la recepción, agradece e indica que se responderá en breve, sin comprometerse a nada (el comportamiento de siempre). |
+| ✅ **Respuesta positiva** | Acepta o confirma lo que pide o propone el remitente, con los siguientes pasos que correspondan. |
+| ❌ **Respuesta negativa** | Declina la petición o la propuesta de forma cortés y profesional. |
+| ✍️ **Según mis comentarios** | El bot te pide que escribas en el chat qué quieres decir y Claude desarrolla ese contenido hasta convertirlo en un correo completo. Escribe `/cancelar` si te arrepientes. |
+
+Elegida la opción, el correo se mueve por IMAP de la bandeja de entrada a la carpeta **IA**
+(usando `MOVE` si el servidor lo soporta, o `COPY` + borrado si no) y se anota el tipo de
+contestación elegido — así no hace falta entrar al cliente de correo para arrastrarlo manualmente.
+El movimiento no genera el borrador automáticamente: usa `/ia` después para que Claude analice la
+carpeta IA y redacte cada respuesta en el sentido que pediste. Los correos arrastrados a mano desde
+el cliente de correo, sin tipo anotado, se contestan con el acuse de recibo por defecto.
+
+La elección se guarda en `data/ia-intents.json` (ruta configurable con `IA_INTENTS_FILE`),
+indexada por `Message-ID` porque el UID del correo cambia al moverlo de carpeta. Cada entrada se
+borra en cuanto `/ia` crea su borrador.
 
 ## 🤖 Servidor MCP — búsqueda de correo para Claude
 
