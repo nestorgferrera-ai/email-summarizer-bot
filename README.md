@@ -9,6 +9,7 @@ Resume automático de correos Ionos enviados por Telegram cada mañana a las 07:
 - ✅ Envía por Telegram a las 07:00 (horario España)
 - ✅ Busca correos desde las 07:00 del día anterior hasta las 07:00 del día actual
 - ✅ Comando `/buscar` en Telegram para buscar correos por texto, remitente o asunto
+- ✅ Comando `/sinleer` en el menú para ver los correos no leídos de un toque
 - ✅ Botón 🤖 IA en cada resultado de `/buscar`: eliges acuse de recibo, respuesta positiva, negativa o desarrollada según tus comentarios
 - ✅ Servidor MCP (`mcp-email-server.js`) para buscar correos directamente desde Claude
 - ✅ Gratuito en Render.com
@@ -36,6 +37,21 @@ anteriores.
 Devuelve hasta 15 resultados por defecto (asunto, remitente, fecha y una vista previa), más
 recientes primero. Si Claude no está disponible (o falla la interpretación), el bot cae de vuelta
 al modo literal con los prefijos `de:`/`asunto:`.
+
+### 📩 `/sinleer` — correos no leídos de un toque
+
+Como los correos sin leer son la consulta más habitual, tienen comando propio en el menú de
+Telegram, sin tener que escribir la frase completa:
+
+```
+/sinleer               → últimos correos sin leer (IMAP UNSEEN)
+/sinleer de mapfre     → sin leer, afinando por remitente
+/sinleer presupuesto   → sin leer que mencionen "presupuesto"
+```
+
+Con texto detrás se interpreta igual que `/buscar` (remitente, asunto, rango de tiempo, número de
+resultados), pero el filtro de no leídos se aplica siempre. Los resultados llegan con el mismo
+botón 🤖 IA que los de `/buscar`.
 
 Cada resultado de `/buscar` se envía como un mensaje individual con un botón **🤖 IA** debajo.
 Al pulsarlo el bot no mueve el correo directamente: primero pregunta **qué tipo de contestación**

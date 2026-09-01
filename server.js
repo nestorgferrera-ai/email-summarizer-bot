@@ -309,7 +309,9 @@ async function sendWeeklyEmailSummary() {
   }
 }
 
-async function handleEmailSearch(chatId, rawQuery) {
+// forceUnread lo activa /sinleer: filtra por correos no leídos aunque el texto
+// del usuario no lo pida (o aunque no haya texto).
+async function handleEmailSearch(chatId, rawQuery, { forceUnread = false } = {}) {
   let connection;
   try {
     // Interpreta la frase en lenguaje natural con Claude (p.ej. "de José Roca,
@@ -318,7 +320,9 @@ async function handleEmailSearch(chatId, rawQuery) {
     const interpreted = await interpretSearchQuery(rawQuery, {
       apiKey: EMAIL_CFG.claude_api_key,
     });
-    const { query, field, unread } = interpreted || parseSearchQuery(rawQuery);
+    const parsed = interpreted || parseSearchQuery(rawQuery);
+    const { query, field } = parsed;
+    const unread = forceUnread || parsed.unread;
     const limit = interpreted?.limit ? Math.min(interpreted.limit, 30) : 15;
     const days = interpreted?.days || null;
 
@@ -336,14 +340,19 @@ async function handleEmailSearch(chatId, rawQuery) {
     }
 
     if (emails.length === 0) {
-      await sendTelegramChunks(`🔍 No se encontraron correos para: "${rawQuery}"`, chatId);
+      const empty = rawQuery
+        ? `🔍 No se encontraron correos para: "${rawQuery}"${unread ? ' (sin leer)' : ''}`
+        : '📭 No hay correos sin leer.';
+      await sendTelegramChunks(empty, chatId);
       return;
     }
 
     const unreadTag = unread ? ' 📩 sin leer' : '';
     const header = query
       ? `🔍 *Resultados para:* "${rawQuery}"${unreadTag} (${emails.length})`
-      : `📬 *Últimos ${emails.length} correos${unreadTag}*`;
+      : unread
+        ? `📩 *Correos sin leer* (${emails.length})`
+        : `📬 *Últimos ${emails.length} correos*`;
     await sendTelegramChunks(header, chatId);
 
     for (const [i, e] of emails.entries()) {
@@ -1497,6 +1506,7 @@ async function registerEmailCommands() {
     { command: 'resumen',    description: 'Resumen de los últimos correos' },
     { command: 'semanal',    description: 'Resumen semanal de correos' },
     { command: 'buscar',     description: 'Buscar correos (texto, de:, asunto:)' },
+    { command: 'sinleer',    description: 'Correos sin leer' },
     { command: 'borradores', description: 'Analizar correos de ayer y crear borradores' },
     { command: 'ia',         description: 'Procesar ahora la carpeta IA' },
     { command: 'ayuda',      description: 'Ver comandos disponibles' },
@@ -1708,13 +1718,22 @@ app.post('/email-webhook', async (req, res) => {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`,
       { chat_id: chatId, text: `🔍 Buscando "${query}"...` }).catch(() => {});
     await handleEmailSearch(chatId, query);
+  } else if (text === '/sinleer' || text.startsWith('/sinleer ')) {
+    // Sin texto lista los últimos correos no leídos; con texto lo usa para
+    // afinar la búsqueda (p.ej. "/sinleer de mapfre").
+    const filtro = text.replace(/^\/sinleer\s*/i, '').trim();
+    await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
+      chat_id: chatId,
+      text: filtro ? `📩 Buscando correos sin leer: "${filtro}"...` : '📩 Buscando correos sin leer...',
+    }).catch(() => {});
+    await handleEmailSearch(chatId, filtro, { forceUnread: true });
   } else if (text === '/buscardebug' || text.startsWith('/buscardebug ')) {
     const query = text.replace(/^\/buscardebug\s*/i, '').trim();
     await handleSearchDebug(chatId, query);
   } else if (text === '/ayuda') {
     await axios.post(`https://api.telegram.org/bot${EMAIL_CFG.telegram_token}/sendMessage`, {
       chat_id: chatId,
-      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/buscar <texto> — Buscar correos (de: / asunto: opcional); cada resultado trae un botón 🤖 IA\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda\n\n🤖 *Botón IA* — al pulsarlo eliges cómo quieres contestar:\n📨 Acuse de recibo\n✅ Respuesta positiva\n❌ Respuesta negativa\n✍️ Según mis comentarios (te pide que escribas qué decir y lo desarrolla)',
+      text: '📋 *Comandos:*\n\n/resumen — Últimos correos\n/semanal — Últimos 7 días\n/buscar <texto> — Buscar correos (de: / asunto: opcional); cada resultado trae un botón 🤖 IA\n/sinleer — Correos sin leer (admite texto para afinar: /sinleer de mapfre)\n/borradores — Analizar correos de ayer y crear borradores de respuesta\n/ia — Procesar ahora la carpeta IA\n/ayuda — Esta ayuda\n\n🤖 *Botón IA* — al pulsarlo eliges cómo quieres contestar:\n📨 Acuse de recibo\n✅ Respuesta positiva\n❌ Respuesta negativa\n✍️ Según mis comentarios (te pide que escribas qué decir y lo desarrolla)',
       parse_mode: 'Markdown',
     }).catch(() => {});
   }
