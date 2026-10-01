@@ -1,0 +1,57 @@
+name: Control de turnos de lavandería
+
+# Controla que cada puesto (UCA100, UCA400, URA300, URA500) haya registrado su
+# envío con /diario, según el cuadro semanal:
+#   - Cierre del día: todos los días a las 23:00 (hora de Canarias).
+#   - Control semanal: los lunes a las 09:00 (hora de Canarias), con la semana
+#     anterior completa y los turnos sin registrar resaltados.
+#
+# Canarias cambia de huso horario con el DST (WET/UTC+0 en invierno,
+# WEST/UTC+1 en verano), así que cada control se programa en dos horarios UTC
+# y un paso previo descarta la ejecución que no corresponda en hora local.
+# Se usa la misma técnica que daily-summary.yml (el servidor de Render se
+# duerme, por eso no se confía en un cron interno).
+
+on:
+  schedule:
+    - cron: '0 22 * * *'  # 23:00 Canarias en verano (WEST, UTC+1)
+    - cron: '0 23 * * *'  # 23:00 Canarias en invierno (WET, UTC+0)
+    - cron: '0 8 * * 1'   # 09:00 Canarias en verano, lunes
+    - cron: '0 9 * * 1'   # 09:00 Canarias en invierno, lunes
+  workflow_dispatch:
+    inputs:
+      tipo:
+        description: 'Control a lanzar a mano'
+        type: choice
+        options: [diario, semanal]
+        default: diario
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decidir qué control toca (hora local en Canarias)
+        id: check
+        run: |
+          hour=$(TZ="Atlantic/Canary" date +%H)
+          dow=$(TZ="Atlantic/Canary" date +%u)   # 1=lunes
+          echo "Canarias: hora $hour, día de la semana $dow"
+          tipo=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tipo="${{ github.event.inputs.tipo }}"
+          elif [ "$hour" = "23" ]; then
+            tipo="diario"
+          elif [ "$hour" = "09" ] && [ "$dow" = "1" ]; then
+            tipo="semanal"
+          fi
+          echo "tipo=$tipo" >> "$GITHUB_OUTPUT"
+
+      - name: Lanzar control
+        if: steps.check.outputs.tipo != ''
+        env:
+          CONTROL_TOKEN: ${{ secrets.LAUNDRY_CONTROL_TOKEN }}
+        run: |
+          curl -sf --max-time 120 --retry 2 --retry-delay 20 --retry-all-errors \
+            -X POST "https://email-summarizer-bot.onrender.com/laundry-control/${{ steps.check.outputs.tipo }}" \
+            -H "Content-Type: application/json" \
+            -H "x-control-token: ${CONTROL_TOKEN}"

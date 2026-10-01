@@ -75,6 +75,27 @@ La elección se guarda en `data/ia-intents.json` (ruta configurable con `IA_INTE
 indexada por `Message-ID` porque el UID del correo cambia al moverlo de carpeta. Cada entrada se
 borra en cuanto `/ia` crea su borrador.
 
+## 🧺 Lavandería: puesto en `/diario` y control de turnos
+
+`/diario` empieza preguntando el **puesto** con botones (UCA100 · Aux. noche, UCA400 · Refuerzo mañana,
+URA300 · Refuerzo mañana, URA500 · Aux. mañana, LIMPIEZA · Aux. limpieza) y después el nombre, que se sigue escribiendo a mano
+(hay bajas y cambios). El puesto se guarda en la **columna M** de la pestaña `Envío Diario`
+(pon el encabezado `Puesto` en `M1`). `/nuevo`, `/recepcion` y `/resumen` no cambian.
+
+El cuadro de qué puestos tocan cada día está en `lib/laundry-turnos.js`
+(L-J-V: UCA100 y UCA400 · miércoles: los cinco puestos · sábado: UCA100 · domingo: UCA100 y LIMPIEZA).
+
+| Control | Cuándo | Qué envía |
+|---|---|---|
+| Diario | todos los días a las 23:00 (Canarias) | puestos que han registrado y los que faltan |
+| Semanal | lunes a las 09:00 (Canarias) | cuadro de la semana anterior con los turnos sin registrar resaltados en rojo (email) |
+
+Los dispara `.github/workflows/laundry-control.yml` llamando a `POST /laundry-control/diario|semanal`
+(también se pueden lanzar a mano desde la pestaña *Actions*). Variables de entorno en Render:
+`LAUNDRY_CONTROL_CHAT_ID` (chat de Telegram que recibe el control; por defecto `TELEGRAM_CHAT_ID`),
+`LAUNDRY_CONTROL_EMAIL_TO` (por defecto `RESUMEN_EMAIL_TO`) y, opcional, `LAUNDRY_CONTROL_TOKEN`
+(el mismo valor como *secret* `LAUNDRY_CONTROL_TOKEN` en GitHub para proteger el endpoint).
+
 ## 🤖 Servidor MCP — búsqueda de correo para Claude
 
 `mcp-email-server.js` expone la búsqueda de correo como servidor [MCP](https://modelcontextprotocol.io)
