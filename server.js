@@ -24,6 +24,7 @@ const {
 } = require('./lib/imap-client');
 const { interpretSearchQuery } = require('./lib/search-intent');
 const { INTENT_TYPES, isValidType, setIntent, describeIntent } = require('./lib/ia-intents');
+const turnos = require('./lib/laundry-turnos');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -80,6 +81,10 @@ const LAUNDRY_CFG = {
   app_url:               process.env.APP_URL || '',
   allowed_chat_ids:      (process.env.ALLOWED_CHAT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
   resumen_email_to:      (process.env.RESUMEN_EMAIL_TO || '').split(',').map(s => s.trim()).filter(Boolean),
+  // Controles de turnos (diario / semanal): quién los recibe y cómo se protege el endpoint
+  control_chat_id:       process.env.LAUNDRY_CONTROL_CHAT_ID || process.env.TELEGRAM_CHAT_ID,
+  control_email_to:      (process.env.LAUNDRY_CONTROL_EMAIL_TO || process.env.RESUMEN_EMAIL_TO || '').split(',').map(s => s.trim()).filter(Boolean),
+  control_token:         process.env.LAUNDRY_CONTROL_TOKEN || '',
 };
 
 // ============================================================================
@@ -548,7 +553,7 @@ function getItemsForFlow(flow) {
 
 const ITEM_COL_START = 4; // columna D (0-indexed)
 
-const STATE = { IDLE: 'idle', ASKING_RESPONSABLE: 'asking_responsable', ASKING_ALBARAN_NUM: 'asking_albaran_num', ASKING_ITEM: 'asking_item', CONFIRMING: 'confirming' };
+const STATE = { IDLE: 'idle', ASKING_PUESTO: 'asking_puesto', ASKING_RESPONSABLE: 'asking_responsable', ASKING_ALBARAN_NUM: 'asking_albaran_num', ASKING_ITEM: 'asking_item', CONFIRMING: 'confirming' };
 const sessions = new Map();
 
 function getSession(chatId) {
@@ -777,7 +782,7 @@ async function sendRecepcionEmail(responsable, albaranNum, data) {
 }
 
 // ---- Google Sheets: envío diario ----
-async function saveDailyEntry(responsable, data) {
+async function saveDailyEntry(responsable, data, puesto = '') {
   if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) {
     console.log('⚠️  Google Sheets (envío diario) no configurado');
     return false;
@@ -792,20 +797,21 @@ async function saveDailyEntry(responsable, data) {
     const marcaTemporal = now.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const dateStr = formatDate(now);
     const timeStr = now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    // A=MarcaTemporal B=Fecha C=Hora D=Responsable E-L=artículos
+    // A=MarcaTemporal B=Fecha C=Hora D=Responsable E-L=artículos M=Puesto
     const row = [
       marcaTemporal, dateStr, timeStr, responsable,
       data.sabanas || 0, data.mantas || 0, data.colchas || 0,
       data.fundas_almohadas || 0, data.almohadas || 0,
       data.toallas || 0, data.toallas_pequenas || 0, data.alfombrillas || 0,
+      puesto,
     ];
     await sheets.spreadsheets.values.append({
       spreadsheetId: LAUNDRY_CFG.daily_sheet_id,
-      range: `${LAUNDRY_CFG.daily_sheet_tab}!A:L`,
+      range: `${LAUNDRY_CFG.daily_sheet_tab}!A:M`,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [row] },
     });
-    console.log(`✅ Envío diario guardado — ${responsable} ${dateStr}`);
+    console.log(`✅ Envío diario guardado — ${puesto || 'sin puesto'} · ${responsable} ${dateStr}`);
     return true;
   } catch (err) {
     console.error('❌ Error guardando envío diario:', err.message);
@@ -935,7 +941,23 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
 </div>`;
   const fmtSubject = d => formatDate(d).replace(/\//g, '-');
   const subject = `Albarán Envío Selava — ${periodLabel} (${fmtSubject(startDate)} → ${fmtSubject(endDate)})`;
-  const to = LAUNDRY_CFG.resumen_email_to;
+  return sendLaundryEmail({
+    to: LAUNDRY_CFG.resumen_email_to,
+    subject,
+    html,
+    label: 'Email resumen',
+    params: {
+      period:      periodLabel,
+      date_range:  `${formatDate(startDate)} → ${formatDate(endDate)}`,
+      row_count:   String(rowCount),
+      grand_total: String(grandTotal),
+    },
+  });
+}
+
+// ---- Email: envío genérico (EmailJS por HTTPS; SMTP como alternativa) ----
+async function sendLaundryEmail({ to, subject, html, params = {}, label = 'email' }) {
+  if (!to.length) return false;
 
   // EmailJS (HTTPS) — no usa puertos SMTP, funciona en cualquier plataforma
   if (EMAIL_CFG.emailjs_service_id && EMAIL_CFG.emailjs_template_id && EMAIL_CFG.emailjs_public_key) {
@@ -949,16 +971,13 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
           to_email:   to.join(', '),
           subject,
           html_content: html,
-          period:     periodLabel,
-          date_range: `${formatDate(startDate)} → ${formatDate(endDate)}`,
-          row_count:  String(rowCount),
-          grand_total: String(grandTotal),
+          ...params,
         },
       }, { timeout: 15000 });
-      console.log(`✅ Email resumen enviado (EmailJS) a: ${to.join(', ')}`);
+      console.log(`✅ ${label} enviado (EmailJS) a: ${to.join(', ')}`);
       return true;
     } catch (err) {
-      console.error('❌ Error enviando email resumen (EmailJS):', err.response?.data || err.message);
+      console.error(`❌ Error enviando ${label} (EmailJS):`, err.response?.data || err.message);
       return false;
     }
   }
@@ -990,10 +1009,10 @@ async function sendResumenEmail(periodLabel, startDate, endDate, totals, rowCoun
         });
     const fromAddress = useGmail ? EMAIL_CFG.gmail_user : EMAIL_CFG.ionos_email;
     await transporter.sendMail({ from: `"Bot Lavandería" <${fromAddress}>`, to, subject, html });
-    console.log(`✅ Email resumen enviado (SMTP) a: ${to.join(', ')}`);
+    console.log(`✅ ${label} enviado (SMTP) a: ${to.join(', ')}`);
     return true;
   } catch (err) {
-    console.error('❌ Error enviando email resumen:', err.message);
+    console.error(`❌ Error enviando ${label}:`, err.message);
     return false;
   }
 }
@@ -1078,16 +1097,28 @@ function buildConfirmText(flow, responsable, data) {
   } else {
     titulo = '🚚 *Resumen del envío diario*';
     pregunta = '¿Confirmas el envío?';
-    extra = '';
+    extra = data.puesto ? `📍 Puesto: *${turnos.puestoLabel(data.puesto)}*\n` : '';
   }
   return `${titulo}\n\n👤 Responsable: *${responsable}*\n${extra}\n${lines.join('\n')}\n\n${pregunta}`;
+}
+
+function puestoKeyboard() {
+  const botones = turnos.PUESTOS.map(p => ({ text: turnos.puestoLabel(p.key), callback_data: `puesto_${p.key}` }));
+  return { inline_keyboard: [[botones[0], botones[1]], [botones[2], botones[3]], [{ text: '❌ Cancelar', callback_data: 'cancel_puesto' }]] };
 }
 
 async function startLaundryFlow(chatId, flow) {
   resetSession(chatId);
   const s = getSession(chatId);
-  s.state = STATE.ASKING_RESPONSABLE;
   s.flow = flow;
+  // El envío diario empieza eligiendo el puesto (UCA100, UCA400, URA300, URA500)
+  // para poder controlar después qué turno ha registrado y cuál no.
+  if (flow === 'diario') {
+    s.state = STATE.ASKING_PUESTO;
+    await laundryMsg(chatId, '📍 ¿En qué *puesto* estás hoy?', { reply_markup: puestoKeyboard() });
+    return;
+  }
+  s.state = STATE.ASKING_RESPONSABLE;
   const prompt = flow === 'recepcion'
     ? '👤 ¿Cuál es tu nombre? (Responsable de la recepción de Selava)'
     : flow === 'albaran'
@@ -1298,6 +1329,11 @@ async function handleLaundryMessage(chatId, text, fromName, meta = {}) {
     return;
   }
 
+  if (session.state === STATE.ASKING_PUESTO) {
+    await laundryMsg(chatId, '📍 Elige tu *puesto* con los botones de arriba (o /cancelar).', { reply_markup: puestoKeyboard() });
+    return;
+  }
+
   if (session.state === STATE.ASKING_RESPONSABLE) {
     if (!t || t.length < 2) { await laundryMsg(chatId, '⚠️ Por favor introduce un nombre válido.'); return; }
     session.responsable = t;
@@ -1357,6 +1393,25 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
   if (callbackData === 'start_recepcion') { await startLaundryFlow(chatId, 'recepcion'); return; }
   if (callbackData === 'start_albaran')   { await startLaundryFlow(chatId, 'albaran');   return; }
   if (callbackData === 'start_diario')    { await startLaundryFlow(chatId, 'diario');    return; }
+
+  // ---- Envío diario: elección del puesto ----
+  if (callbackData === 'cancel_puesto') {
+    resetSession(chatId);
+    await laundryMsg(chatId, '❌ Registro cancelado.');
+    return;
+  }
+  if (callbackData.startsWith('puesto_')) {
+    const puesto = turnos.normalizePuesto(callbackData.slice('puesto_'.length));
+    const sess = getSession(chatId);
+    if (!puesto || sess.state !== STATE.ASKING_PUESTO || sess.flow !== 'diario') {
+      await laundryMsg(chatId, 'Ese botón ya no está activo. Usa /diario para empezar de nuevo.');
+      return;
+    }
+    sess.data.puesto = puesto;
+    sess.state = STATE.ASKING_RESPONSABLE;
+    await laundryMsg(chatId, `📍 Puesto: *${turnos.puestoLabel(puesto)}*\n\n👤 ¿Cuál es tu nombre? (Responsable del envío)`);
+    return;
+  }
 
   if (callbackData === 'resumen_martes_jueves' || callbackData === 'resumen_viernes_lunes') {
     const periodKey = callbackData === 'resumen_martes_jueves' ? 'martes_jueves' : 'viernes_lunes';
@@ -1431,9 +1486,10 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
     } else if (isAlbaran) {
       saved = await saveAlbaran(session.responsable, session.data);
     } else {
-      saved = await saveDailyEntry(session.responsable, session.data);
+      saved = await saveDailyEntry(session.responsable, session.data, session.data.puesto);
     }
     const { responsable, data, flow } = session;
+    const puestoInfo = (!isRecepcion && !isAlbaran && data.puesto) ? `\n📍 Puesto: ${turnos.puestoLabel(data.puesto)}` : '';
     resetSession(chatId);
     const now = new Date();
     const dateStr = formatDate(now);
@@ -1464,12 +1520,71 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
       : 'Usa /diario para registrar otro envío.\nUsa /resumen para generar el albarán por período.';
     if (saved) {
       await laundryMsg(chatId,
-        `${titulo}\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}\n📦 Total artículos: *${total} unidades*\n\n_Los datos se han guardado en Google Sheets._\n\n${nextCmd}`);
+        `${titulo}\n\n📅 Fecha: ${dateStr} a las ${timeStr}${puestoInfo}\n👤 Responsable: ${responsable}\n📦 Total artículos: *${total} unidades*\n\n_Los datos se han guardado en Google Sheets._\n\n${nextCmd}`);
     } else {
       await laundryMsg(chatId,
-        `⚠️ *Registrado (sin Google Sheets)*\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}\n📦 Total artículos: *${total} unidades*\n\n_No se pudo guardar en Google Sheets. Contacta con el administrador._\n\n${nextCmd}`);
+        `⚠️ *Registrado (sin Google Sheets)*\n\n📅 Fecha: ${dateStr} a las ${timeStr}${puestoInfo}\n👤 Responsable: ${responsable}\n📦 Total artículos: *${total} unidades*\n\n_No se pudo guardar en Google Sheets. Contacta con el administrador._\n\n${nextCmd}`);
     }
   }
+}
+
+// ---- Control de turnos: qué puestos han registrado su envío ----
+async function readDailyEntries() {
+  if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: LAUNDRY_CFG.daily_sheet_id,
+      range: `${LAUNDRY_CFG.daily_sheet_tab}!A:M`,
+    });
+    return turnos.rowsToEntries(response.data.values || []);
+  } catch (err) {
+    console.error('❌ Error leyendo envíos para el control de turnos:', err.message);
+    return null;
+  }
+}
+
+// kind: 'diario' (revisa el día `fecha`, por defecto hoy en Canarias) o
+// 'semanal' (revisa la semana completa anterior a `fecha`). Envía el resultado
+// por Telegram (LAUNDRY_CONTROL_CHAT_ID) y por email (LAUNDRY_CONTROL_EMAIL_TO).
+async function sendLaundryControl(kind, fecha) {
+  const hoy = fecha || turnos.canaryToday();
+  const chatId = LAUNDRY_CFG.control_chat_id;
+  const entries = await readDailyEntries();
+  if (!entries) {
+    if (chatId) await laundryMsg(chatId, `⚠️ No se pudo leer Google Sheets: el control ${kind} de turnos no se ha podido hacer.`);
+    return { ok: false, error: 'No se pudo leer Google Sheets' };
+  }
+
+  let text, html, subject, faltan;
+  if (kind === 'semanal') {
+    const week = turnos.buildWeek(turnos.previousWeekMonday(hoy), entries);
+    text = turnos.weeklyControlText(week);
+    html = turnos.weeklyControlHtml(week);
+    faltan = week.faltan;
+    subject = `${faltan ? '⚠️ ' : '✅ '}Control semanal envíos Selava — ${turnos.fmtFecha(week.lunes)} → ${turnos.fmtFecha(week.domingo)}` +
+      (faltan ? ` — ${faltan} turno${faltan !== 1 ? 's' : ''} sin registrar` : '');
+  } else {
+    const day = turnos.buildDay(hoy, entries);
+    text = turnos.dailyControlText(day);
+    html = turnos.dailyControlHtml(day);
+    faltan = day.faltan.length;
+    subject = `${faltan ? '⚠️ ' : '✅ '}Control diario envíos Selava — ${turnos.DIAS[day.dow]} ${turnos.fmtFecha(day.iso)}` +
+      (faltan ? ` — FALTAN: ${day.faltan.join(', ')}` : '');
+  }
+
+  const telegram = !!chatId;
+  if (chatId) await laundryMsg(chatId, text);
+  const email = await sendLaundryEmail({
+    to: LAUNDRY_CFG.control_email_to, subject, html, label: `Email control ${kind}`,
+    params: { period: `Control ${kind}`, grand_total: String(faltan) },
+  });
+  console.log(`✅ Control ${kind} de turnos — ${faltan} sin registrar (telegram: ${telegram}, email: ${email})`);
+  return { ok: true, faltan, telegram, email };
 }
 
 async function registerLaundryCommands() {
@@ -1750,6 +1865,30 @@ app.post('/laundry-webhook', async (req, res) => {
   if (update.callback_query) {
     const cb = update.callback_query;
     await handleLaundryCallback(cb.message.chat.id, cb.data, cb.id);
+  }
+});
+
+// Controles de turnos de lavandería. Los dispara GitHub Actions (laundry-control.yml):
+//   POST /laundry-control/diario   → cierre del día (23:00 Canarias)
+//   POST /laundry-control/semanal  → semana anterior completa (lunes 09:00 Canarias)
+// Body opcional { "fecha": "YYYY-MM-DD" } para repetir un control en otra fecha.
+// Si LAUNDRY_CONTROL_TOKEN está definido, hay que enviarlo en la cabecera x-control-token.
+app.post('/laundry-control/:tipo', async (req, res) => {
+  const { tipo } = req.params;
+  if (tipo !== 'diario' && tipo !== 'semanal') return res.status(404).json({ status: 'error', message: 'Tipo de control desconocido' });
+  if (LAUNDRY_CFG.control_token && req.get('x-control-token') !== LAUNDRY_CFG.control_token) {
+    return res.status(401).json({ status: 'error', message: 'No autorizado' });
+  }
+  const fecha = req.body?.fecha;
+  if (fecha && !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    return res.status(400).json({ status: 'error', message: 'fecha debe tener formato YYYY-MM-DD' });
+  }
+  try {
+    const result = await sendLaundryControl(tipo, fecha);
+    res.status(result.ok ? 200 : 500).json({ status: result.ok ? 'ok' : 'error', ...result });
+  } catch (err) {
+    console.error(`❌ Error en control ${tipo}:`, err.message);
+    res.status(500).json({ status: 'error', message: err.message });
   }
 });
 
