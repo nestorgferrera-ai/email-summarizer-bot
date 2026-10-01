@@ -1104,7 +1104,10 @@ function buildConfirmText(flow, responsable, data) {
 
 function puestoKeyboard() {
   const botones = turnos.PUESTOS.map(p => ({ text: turnos.puestoLabel(p.key), callback_data: `puesto_${p.key}` }));
-  return { inline_keyboard: [[botones[0], botones[1]], [botones[2], botones[3]], [{ text: '❌ Cancelar', callback_data: 'cancel_puesto' }]] };
+  const filas = [];
+  for (let i = 0; i < botones.length; i += 2) filas.push(botones.slice(i, i + 2));
+  filas.push([{ text: '❌ Cancelar', callback_data: 'cancel_puesto' }]);
+  return { inline_keyboard: filas };
 }
 
 async function startLaundryFlow(chatId, flow) {

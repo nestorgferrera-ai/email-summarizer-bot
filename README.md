@@ -78,12 +78,12 @@ borra en cuanto `/ia` crea su borrador.
 ## 🧺 Lavandería: puesto en `/diario` y control de turnos
 
 `/diario` empieza preguntando el **puesto** con botones (UCA100 · Aux. noche, UCA400 · Refuerzo mañana,
-URA300 · Refuerzo mañana, URA500 · Aux. mañana) y después el nombre, que se sigue escribiendo a mano
+URA300 · Refuerzo mañana, URA500 · Aux. mañana, LIMPIEZA · Aux. limpieza) y después el nombre, que se sigue escribiendo a mano
 (hay bajas y cambios). El puesto se guarda en la **columna M** de la pestaña `Envío Diario`
 (pon el encabezado `Puesto` en `M1`). `/nuevo`, `/recepcion` y `/resumen` no cambian.
 
 El cuadro de qué puestos tocan cada día está en `lib/laundry-turnos.js`
-(L-J-V: UCA100 y UCA400 · miércoles: los cuatro · sábado y domingo: UCA100).
+(L-J-V: UCA100 y UCA400 · miércoles: los cinco puestos · sábado: UCA100 · domingo: UCA100 y LIMPIEZA).
 
 | Control | Cuándo | Qué envía |
 |---|---|---|
