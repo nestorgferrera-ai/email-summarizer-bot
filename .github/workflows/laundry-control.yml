@@ -1,23 +1,24 @@
 name: Control de turnos de lavandería
 
-# Controla que cada puesto (UCA100, UCA400, URA300, URA500) haya registrado su
-# envío con /diario, según el cuadro semanal:
-#   - Cierre del día: todos los días a las 23:00 (hora de Canarias).
-#   - Control semanal: los lunes a las 09:00 (hora de Canarias), con la semana
-#     anterior completa y los turnos sin registrar resaltados.
+# Controla que cada puesto (UCA100, UCA400, URA300, URA500, LIMPIEZA) haya
+# registrado su envío con /diario, según el cuadro semanal:
+#   - Cierre del día: todos los días a las 22:00 UTC (23:00 en Canarias en
+#     verano, 22:00 en invierno).
+#   - Control semanal: los lunes a las 08:00 UTC (09:00 en Canarias en verano,
+#     08:00 en invierno), con la semana anterior completa y los turnos sin
+#     registrar resaltados.
 #
-# Canarias cambia de huso horario con el DST (WET/UTC+0 en invierno,
-# WEST/UTC+1 en verano), así que cada control se programa en dos horarios UTC
-# y un paso previo descarta la ejecución que no corresponda en hora local.
-# Se usa la misma técnica que daily-summary.yml (el servidor de Render se
-# duerme, por eso no se confía en un cron interno).
+# GitHub puede retrasar los cron programados varias horas. Por eso el tipo de
+# control se decide por QUÉ cron lo disparó (no por la hora a la que arranca) y
+# la fecha a controlar se calcula a partir de la hora prevista del disparo, no
+# de la hora real: un cierre del día que arranca a las 02:00 UTC del día
+# siguiente sigue controlando el día anterior.
+# (El servidor de Render se duerme, por eso no se confía en un cron interno.)
 
 on:
   schedule:
-    - cron: '0 22 * * *'  # 23:00 Canarias en verano (WEST, UTC+1)
-    - cron: '0 23 * * *'  # 23:00 Canarias en invierno (WET, UTC+0)
-    - cron: '0 8 * * 1'   # 09:00 Canarias en verano, lunes
-    - cron: '0 9 * * 1'   # 09:00 Canarias en invierno, lunes
+    - cron: '0 22 * * *'  # cierre del día
+    - cron: '0 8 * * 1'   # control semanal (lunes)
   workflow_dispatch:
     inputs:
       tipo:
@@ -25,33 +26,56 @@ on:
         type: choice
         options: [diario, semanal]
         default: diario
+      fecha:
+        description: 'Fecha a controlar (YYYY-MM-DD). Vacío = hoy en Canarias'
+        required: false
+        default: ''
 
 jobs:
   control:
     runs-on: ubuntu-latest
     steps:
-      - name: Decidir qué control toca (hora local en Canarias)
+      - name: Decidir qué control toca y para qué fecha
         id: check
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_TIPO: ${{ github.event.inputs.tipo }}
+          INPUT_FECHA: ${{ github.event.inputs.fecha }}
         run: |
-          hour=$(TZ="Atlantic/Canary" date +%H)
-          dow=$(TZ="Atlantic/Canary" date +%u)   # 1=lunes
-          echo "Canarias: hora $hour, día de la semana $dow"
           tipo=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tipo="${{ github.event.inputs.tipo }}"
-          elif [ "$hour" = "23" ]; then
-            tipo="diario"
-          elif [ "$hour" = "09" ] && [ "$dow" = "1" ]; then
-            tipo="semanal"
+          fecha=""
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            tipo="$INPUT_TIPO"
+            fecha="$INPUT_FECHA"
+          else
+            case "$SCHEDULE" in
+              "0 22 * * *")
+                tipo="diario"
+                # Previsto 22:00 UTC; tolera hasta 12 h de retraso
+                fecha=$(date -u -d '12 hours ago' +%F)
+                ;;
+              "0 8 * * 1")
+                tipo="semanal"
+                # Previsto lunes 08:00 UTC; cualquier día de esa semana vale
+                fecha=$(date -u -d '6 hours ago' +%F)
+                ;;
+            esac
           fi
+          echo "Evento=$EVENT cron='$SCHEDULE' -> tipo=$tipo fecha=${fecha:-hoy}"
           echo "tipo=$tipo" >> "$GITHUB_OUTPUT"
+          echo "fecha=$fecha" >> "$GITHUB_OUTPUT"
 
       - name: Lanzar control
         if: steps.check.outputs.tipo != ''
         env:
           CONTROL_TOKEN: ${{ secrets.LAUNDRY_CONTROL_TOKEN }}
+          TIPO: ${{ steps.check.outputs.tipo }}
+          FECHA: ${{ steps.check.outputs.fecha }}
         run: |
+          if [ -n "$FECHA" ]; then body="{\"fecha\":\"$FECHA\"}"; else body="{}"; fi
           curl -sf --max-time 120 --retry 2 --retry-delay 20 --retry-all-errors \
-            -X POST "https://email-summarizer-bot.onrender.com/laundry-control/${{ steps.check.outputs.tipo }}" \
+            -X POST "https://email-summarizer-bot.onrender.com/laundry-control/${TIPO}" \
             -H "Content-Type: application/json" \
-            -H "x-control-token: ${CONTROL_TOKEN}"
+            -H "x-control-token: ${CONTROL_TOKEN}" \
+            -d "$body"
