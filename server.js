@@ -819,43 +819,6 @@ async function saveDailyEntry(responsable, data, puesto = '') {
   }
 }
 
-// ---- Google Sheets: desglose diario últimos 7 días ----
-async function getDailyBreakdown() {
-  if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
-  try {
-    const auth = new google.auth.GoogleAuth({
-      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-    });
-    const sheets = google.sheets({ version: 'v4', auth });
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: LAUNDRY_CFG.daily_sheet_id,
-      range: `${LAUNDRY_CFG.daily_sheet_tab}!A:M`,
-    });
-    const rows = response.data.values || [];
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const weekAgo = new Date(today); weekAgo.setDate(today.getDate() - 6);
-    const byDay = {};
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || !row[1]) continue;
-      const rowDate = parseSheetDate(row[1]);
-      if (!rowDate || rowDate < weekAgo || rowDate > today) continue;
-      const key = row[1]; // DD/MM/YYYY como clave
-      if (!byDay[key]) byDay[key] = { date: rowDate, totals: Object.fromEntries(ITEMS.map(i => [i.key, 0])), entries: 0 };
-      byDay[key].entries++;
-      ITEMS.forEach((item, idx) => {
-        const val = parseInt(row[ITEM_COL_START + idx], 10);
-        if (!isNaN(val)) byDay[key].totals[item.key] += val;
-      });
-    }
-    return byDay;
-  } catch (err) {
-    console.error('❌ Error leyendo desglose diario:', err.message);
-    return null;
-  }
-}
-
 // ---- Google Sheets: leer totales por período ----
 async function getTotalsForPeriod(startDate, endDate, since = null) {
   if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
@@ -1181,7 +1144,7 @@ async function handleLaundryMessage(chatId, text, fromName, meta = {}) {
       `*Comandos disponibles:*\n` +
       `/recepcion — Registrar recepción de ropa de Selava\n` +
       `/diario — Registrar envío de ropa a Selava\n` +
-      `/semana — Ver desglose de envíos por día (última semana)\n` +
+      `/semana — Ver por día cada turno y la ropa recogida (última semana)\n` +
       `/resumen — Generar albarán de envíos por período\n` +
       `/cancelar — Cancelar registro en curso\n` +
       `/miid — Ver mi ID de chat (para dar de alta a un usuario)\n` +
@@ -1194,7 +1157,7 @@ async function handleLaundryMessage(chatId, text, fromName, meta = {}) {
       `📖 *Ayuda — Bot de Lavandería*\n\n` +
       `/recepcion — Registrar recepción de ropa de Selava\n` +
       `/diario — Registrar envío diario de ropa a Selava\n` +
-      `/semana — Ver desglose de envíos por día (última semana)\n` +
+      `/semana — Ver por día cada turno y la ropa recogida (última semana)\n` +
       `/resumen — Generar albarán por período (Mar-Jue / Vie-Lun)\n` +
       `/cancelar — Cancelar el registro en curso\n` +
       `/miid — Ver mi ID de chat (para dar de alta a un usuario)\n\n` +
@@ -1293,24 +1256,16 @@ async function handleLaundryMessage(chatId, text, fromName, meta = {}) {
 
   if (t === '/semana') {
     await laundryMsg(chatId, '⏳ Cargando datos de la última semana...');
-    const byDay = await getDailyBreakdown();
-    if (!byDay) {
+    const rows = await readDailyRows();
+    if (!rows) {
       await laundryMsg(chatId, '❌ No se pudo conectar con Google Sheets.');
       return;
     }
-    const days = Object.values(byDay).sort((a, b) => b.date - a.date);
-    if (days.length === 0) {
-      await laundryMsg(chatId, 'ℹ️ No hay registros de envíos en los últimos 7 días.');
-      return;
-    }
-    const lines = days.map(({ date, totals, entries }) => {
-      const dateStr = formatDate(date);
-      const total = ITEMS.reduce((s, item) => s + (totals[item.key] || 0), 0);
-      const detalle = ITEMS.filter(item => totals[item.key] > 0)
-        .map(item => `    • ${item.label}: ${totals[item.key]}`).join('\n');
-      return `📅 *${dateStr}* — ${entries} envío${entries !== 1 ? 's' : ''} — *${total} piezas*\n${detalle}`;
-    });
-    await laundryMsg(chatId, `📆 *Resumen últimos 7 días*\n\n${lines.join('\n\n')}`);
+    const detailed = turnos.rowsToDetailedEntries(rows, ITEMS, ITEM_COL_START);
+    const dias = turnos.buildRecentDays(turnos.canaryToday(), detailed, ITEMS);
+    const { cabecera, bloques, pie } = turnos.recentSummaryBlocks(dias, ITEMS);
+    const mensajes = turnos.splitMessage([cabecera, ...bloques, pie]);
+    for (const m of mensajes) await laundryMsg(chatId, m);
     return;
   }
 
@@ -1532,7 +1487,7 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
 }
 
 // ---- Control de turnos: qué puestos han registrado su envío ----
-async function readDailyEntries() {
+async function readDailyRows() {
   if (!LAUNDRY_CFG.daily_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
   try {
     const auth = new google.auth.GoogleAuth({
@@ -1544,11 +1499,16 @@ async function readDailyEntries() {
       spreadsheetId: LAUNDRY_CFG.daily_sheet_id,
       range: `${LAUNDRY_CFG.daily_sheet_tab}!A:M`,
     });
-    return turnos.rowsToEntries(response.data.values || []);
+    return response.data.values || [];
   } catch (err) {
-    console.error('❌ Error leyendo envíos para el control de turnos:', err.message);
+    console.error('❌ Error leyendo envíos diarios:', err.message);
     return null;
   }
+}
+
+async function readDailyEntries() {
+  const rows = await readDailyRows();
+  return rows ? turnos.rowsToEntries(rows) : null;
 }
 
 // kind: 'diario' (revisa el día `fecha`, por defecto hoy en Canarias) o
@@ -1595,7 +1555,7 @@ async function registerLaundryCommands() {
   const commands = [
     { command: 'recepcion', description: 'Registrar recepción de ropa de Selava' },
     { command: 'diario',    description: 'Registrar envío diario a Selava' },
-    { command: 'semana',    description: 'Ver desglose de envíos (última semana)' },
+    { command: 'semana',    description: 'Ver turnos y ropa por día (última semana)' },
     { command: 'resumen',   description: 'Generar albarán de envíos por período' },
     { command: 'cancelar',  description: 'Cancelar el registro en curso' },
     { command: 'miid',      description: 'Ver mi ID de chat (para dar de alta a un usuario)' },
