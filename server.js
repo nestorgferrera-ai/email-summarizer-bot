@@ -25,6 +25,7 @@ const {
 const { interpretSearchQuery } = require('./lib/search-intent');
 const { INTENT_TYPES, isValidType, setIntent, describeIntent } = require('./lib/ia-intents');
 const turnos = require('./lib/laundry-turnos');
+const laundryDiff = require('./lib/laundry-diff');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1044,6 +1045,62 @@ async function getLastResumenTimestamp() {
   }
 }
 
+// ---- Google Sheets: última fila del resumen de envío (lo enviado a Selava) ----
+async function getLastResumenRow() {
+  if (!LAUNDRY_CFG.resumen_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
+  try {
+    const auth = new google.auth.GoogleAuth({
+      credentials: JSON.parse(LAUNDRY_CFG.google_credentials),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: LAUNDRY_CFG.resumen_sheet_id,
+      range: `${LAUNDRY_CFG.resumen_sheet_tab}!A:M`,
+    });
+    const rows = response.data.values || [];
+    for (let i = rows.length - 1; i >= 1; i--) {
+      const ts = parseSheetDateTime(rows[i]?.[0]);
+      if (ts) return { row: rows[i], ts };
+    }
+    return null;
+  } catch (err) {
+    console.error('❌ Error leyendo último albarán de envío:', err.message);
+    return null;
+  }
+}
+
+// ---- Email: diferencias entre lo enviado a Selava y lo recibido ----
+async function sendDiferenciasEmail(responsable, albaranNum, received) {
+  const to = ['nestor-garcia@clinicabandama.com'];
+  const last = await getLastResumenRow();
+  if (!last) {
+    console.log('⚠️  Sin albarán de envío previo: no se envía el correo de diferencias');
+    return 'sin_envio';
+  }
+  const { sent, periodo } = laundryDiff.resumenRowToSent(last.row);
+  const cmp = laundryDiff.compare(sent, received);
+  const now = new Date();
+  const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diasAntes = Math.round((startOfDay(now) - startOfDay(last.ts)) / 86400000);
+  const hhmm = last.ts.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+  const html = laundryDiff.buildHtml(cmp, {
+    albaranNum, responsable,
+    recibidoFecha: formatDate(now),
+    enviadoTs: `${formatDate(last.ts)} ${hhmm}`,
+    enviadoPeriodo: periodo ? `Resp.: ${periodo}` : '',
+    diasAntes,
+  });
+  const ok = await sendLaundryEmail({
+    to,
+    subject: laundryDiff.buildSubject(albaranNum, cmp.faltan, cmp.extra),
+    html,
+    label: 'Email diferencias',
+    params: { period: `Albarán ${albaranNum || ''}`, date_range: formatDate(now), row_count: '1', grand_total: String(cmp.faltan + cmp.extra) },
+  });
+  return ok ? { faltan: cmp.faltan, extra: cmp.extra } : 'error';
+}
+
 // ---- Lógica de conversación ----
 function buildConfirmText(flow, responsable, data) {
   const flowItems = getItemsForFlow(flow);
@@ -1463,8 +1520,14 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
         const emailStatus = emailed
           ? '✅ _Email enviado a nestor-garcia@clinicabandama.com_'
           : '⚠️ _No se pudo enviar el email._';
+        const dif = await sendDiferenciasEmail(responsable, data.albaran_num, data);
+        const difStatus = dif === 'sin_envio'
+          ? '\nℹ️ _No hay albarán de envío previo: no se envió el correo de diferencias._'
+          : dif === 'error'
+            ? '\n⚠️ _No se pudo enviar el correo de diferencias._'
+            : `\n📧 _Correo de diferencias enviado: ${dif.faltan ? `faltan ${dif.faltan}` : 'no falta nada'}${dif.extra ? `, ${dif.extra} extra` : ''}._`;
         await laundryMsg(chatId,
-          `✅ *Recepción de Selava registrada*\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}${albaranInfo}\n📦 Total artículos: *${total} unidades*\n\n${itemLines}\n\n_Datos guardados en Google Sheets._\n${emailStatus}\n\nUsa /recepcion para registrar otra recepción.`);
+          `✅ *Recepción de Selava registrada*\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}${albaranInfo}\n📦 Total artículos: *${total} unidades*\n\n${itemLines}\n\n_Datos guardados en Google Sheets._\n${emailStatus}${difStatus}\n\nUsa /recepcion para registrar otra recepción.`);
       } else {
         await laundryMsg(chatId,
           `⚠️ *Registrado (sin Google Sheets)*\n\n📅 Fecha: ${dateStr} a las ${timeStr}\n👤 Responsable: ${responsable}${albaranInfo}\n📦 Total artículos: *${total} unidades*\n\n_No se pudo guardar en Google Sheets. Contacta con el administrador._\n\nUsa /recepcion para registrar otra recepción.`);
