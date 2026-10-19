@@ -1046,7 +1046,9 @@ async function getLastResumenTimestamp() {
 }
 
 // ---- Google Sheets: última fila del resumen de envío (lo enviado a Selava) ----
-async function getLastResumenRow() {
+// Solo cuenta envíos de días anteriores a `before`: lo que se recibe hoy es
+// siempre lo enviado en un día previo, nunca lo enviado hoy.
+async function getLastResumenRow(before = new Date()) {
   if (!LAUNDRY_CFG.resumen_sheet_id || !LAUNDRY_CFG.google_credentials) return null;
   try {
     const auth = new google.auth.GoogleAuth({
@@ -1059,9 +1061,10 @@ async function getLastResumenRow() {
       range: `${LAUNDRY_CFG.resumen_sheet_tab}!A:M`,
     });
     const rows = response.data.values || [];
+    const startOfBefore = new Date(before.getFullYear(), before.getMonth(), before.getDate());
     for (let i = rows.length - 1; i >= 1; i--) {
       const ts = parseSheetDateTime(rows[i]?.[0]);
-      if (ts) return { row: rows[i], ts };
+      if (ts && ts < startOfBefore) return { row: rows[i], ts };
     }
     return null;
   } catch (err) {
@@ -1073,14 +1076,14 @@ async function getLastResumenRow() {
 // ---- Email: diferencias entre lo enviado a Selava y lo recibido ----
 async function sendDiferenciasEmail(responsable, albaranNum, received) {
   const to = ['nestor-garcia@clinicabandama.com'];
-  const last = await getLastResumenRow();
+  const now = new Date();
+  const last = await getLastResumenRow(now);
   if (!last) {
-    console.log('⚠️  Sin albarán de envío previo: no se envía el correo de diferencias');
+    console.log('⚠️  Sin albarán de envío anterior a hoy: no se envía el correo de diferencias');
     return 'sin_envio';
   }
   const { sent, periodo } = laundryDiff.resumenRowToSent(last.row);
   const cmp = laundryDiff.compare(sent, received);
-  const now = new Date();
   const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const diasAntes = Math.round((startOfDay(now) - startOfDay(last.ts)) / 86400000);
   const hhmm = last.ts.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
@@ -1522,7 +1525,7 @@ async function handleLaundryCallback(chatId, callbackData, queryId) {
           : '⚠️ _No se pudo enviar el email._';
         const dif = await sendDiferenciasEmail(responsable, data.albaran_num, data);
         const difStatus = dif === 'sin_envio'
-          ? '\nℹ️ _No hay albarán de envío previo: no se envió el correo de diferencias._'
+          ? '\nℹ️ _No hay albarán de envío anterior a hoy: no se envió el correo de diferencias._'
           : dif === 'error'
             ? '\n⚠️ _No se pudo enviar el correo de diferencias._'
             : `\n📧 _Correo de diferencias enviado: ${dif.faltan ? `faltan ${dif.faltan}` : 'no falta nada'}${dif.extra ? `, ${dif.extra} extra` : ''}._`;
