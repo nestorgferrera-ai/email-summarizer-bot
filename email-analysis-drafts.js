@@ -8,10 +8,20 @@
 
 require('dotenv').config();
 const Anthropic = require('@anthropic-ai/sdk');
-const ImapSimple = require('imap-simple');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
-const { findFolderByName } = require('./lib/imap-client');
+const {
+  connectToImap,
+  closeImap,
+  findFolderByName,
+  findSpecialUseFolder,
+  searchUids,
+  fetchMessages,
+  fetchBodyText,
+  appendMessage,
+  markAnswered,
+  toImapDay,
+} = require('./lib/imap-client');
 const { INTENT_TYPES, DEFAULT_INTENT_TYPE, consumeIntent, describeIntent } = require('./lib/ia-intents');
 
 // ============================================================================
@@ -179,16 +189,11 @@ async function withRetry(fn, retries = 3, delayMs = 1000) {
 // CONECTAR A IONOS IMAP
 // ============================================================================
 async function connectToIMAP() {
-  const connection = await ImapSimple.connect({
-    imap: {
-      user:       CONFIG.ionos_email,
-      password:   CONFIG.ionos_pass,
-      host:       CONFIG.imap_host,
-      port:       CONFIG.imap_port,
-      tls:        true,
-      authTimeout: 10000,
-      tlsOptions: { rejectUnauthorized: true },
-    },
+  const connection = await connectToImap({
+    user:     CONFIG.ionos_email,
+    password: CONFIG.ionos_pass,
+    host:     CONFIG.imap_host,
+    port:     CONFIG.imap_port,
   });
   console.log('✅ Conectado a Ionos IMAP');
   return connection;
@@ -198,61 +203,41 @@ async function connectToIMAP() {
 // ENCONTRAR CARPETA DE BORRADORES
 // ============================================================================
 async function findDraftsFolder(connection) {
-  // Buscar en los buzones por el atributo \Drafts
-  try {
-    const boxes = await connection.getBoxes();
-    const found = searchBoxByAttrib(boxes, '\\Drafts', '');
-    if (found) {
-      console.log(`📁 Carpeta borradores: ${found}`);
-      return found;
-    }
-  } catch (_) {}
-
-  // Fallback: probar nombres habituales
-  for (const candidate of ['Drafts', 'INBOX.Drafts', 'Borradores', 'Draft']) {
-    try {
-      await connection.openBox(candidate);
-      await connection.openBox('INBOX', false);
-      console.log(`📁 Carpeta borradores (fallback): ${candidate}`);
-      return candidate;
-    } catch (_) {}
+  // Por el atributo \Drafts del servidor y, si no lo informa, por los nombres habituales
+  const found = await findSpecialUseFolder(connection, '\\Drafts', ['Drafts', 'INBOX.Drafts', 'Borradores', 'Draft']);
+  if (found) {
+    console.log(`📁 Carpeta borradores: ${found}`);
+    return found;
   }
 
   console.log('⚠️  No se encontró carpeta Borradores, usando "Drafts"');
   return 'Drafts';
 }
 
-function searchBoxByAttrib(boxes, attrib, prefix) {
-  for (const [name, box] of Object.entries(boxes || {})) {
-    const fullName = prefix ? `${prefix}.${name}` : name;
-    if (Array.isArray(box.attribs) && box.attribs.includes(attrib)) return fullName;
-    const child = searchBoxByAttrib(box.children, attrib, fullName);
-    if (child) return child;
-  }
-  return null;
-}
-
 // ============================================================================
 // OBTENER CORREOS DEL DÍA ANTERIOR
 // ============================================================================
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-function toImapDate(d) {
-  return `${d.getDate()}-${MONTHS[d.getMonth()]}-${d.getFullYear()}`;
-}
+// Convierte un mensaje ya descargado (cabeceras + estructura) en el objeto
+// que analiza Claude, leyendo además el cuerpo de texto.
+async function readEmail(connection, msg) {
+  let body = '';
+  try {
+    body = await fetchBodyText(connection, msg);
+  } catch (_) {
+    body = '(no se pudo obtener el cuerpo)';
+  }
 
-function stripHtml(html) {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  return {
+    from:       msg.from    || 'Desconocido',
+    to:         msg.to      || CONFIG.ionos_email,
+    subject:    msg.subject || '(sin asunto)',
+    date:       msg.date    || new Date(),
+    messageId:  msg.messageId,
+    inReplyTo:  msg.inReplyTo,
+    references: msg.references,
+    body:       body.trim().substring(0, CONFIG.max_body_chars),
+  };
 }
 
 async function fetchYesterdayEmails(connection) {
@@ -265,60 +250,19 @@ async function fetchYesterdayEmails(connection) {
 
   console.log(`🔍 Buscando correos del ${yesterday.toLocaleDateString('es-ES')}...`);
 
-  await connection.openBox('INBOX', false);
+  await connection.mailboxOpen('INBOX');
 
-  const messages = await connection.search(
-    [['SINCE', toImapDate(yesterday)], ['BEFORE', toImapDate(today)]],
-    {
-      bodies: ['HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)', 'TEXT'],
-      struct: true,
-      markSeen: false,
-    }
-  );
+  const uids = await searchUids(connection, { since: toImapDay(yesterday), before: toImapDay(today) });
+  const messages = await fetchMessages(connection, uids, { references: true });
 
   console.log(`📧 ${messages.length} correos encontrados`);
   const emails = [];
 
   for (const msg of messages) {
     try {
-      // imap-simple expone los headers en msg.parts, no en msg.headers
-      const headerPart = (msg.parts || []).find(p => p.which && p.which.startsWith('HEADER'));
-      const headers = (headerPart && headerPart.body) ? headerPart.body : {};
-
-      const from      = (headers.from?.[0])           || 'Desconocido';
-      const to        = (headers.to?.[0])              || CONFIG.ionos_email;
-      const subject   = (headers.subject?.[0])         || '(sin asunto)';
-      const dateStr   = (headers.date?.[0])            || '';
-      const messageId = (headers['message-id']?.[0])   || '';
-      const inReplyTo = (headers['in-reply-to']?.[0])  || '';
-      const references= (headers.references?.[0])      || '';
-
-      console.log(`  → De: ${from} | Asunto: ${subject}`);
-      const date = dateStr ? new Date(dateStr) : new Date();
-
-      // Obtener cuerpo del texto
-      let body = '';
-      try {
-        const parts = ImapSimple.getParts(msg.attributes.struct);
-        for (const part of parts) {
-          if (part.type !== 'text') continue;
-          const data = await connection.getPartData(msg, part);
-          const text = data.toString();
-          if (part.subtype === 'plain') {
-            body = text;
-            break;
-          } else if (part.subtype === 'html' && !body) {
-            body = stripHtml(text);
-          }
-        }
-      } catch (_) {
-        body = '(no se pudo obtener el cuerpo)';
-      }
-
-      emails.push({
-        from, to, subject, date, messageId, inReplyTo, references,
-        body: body.trim().substring(0, CONFIG.max_body_chars),
-      });
+      const email = await readEmail(connection, msg);
+      console.log(`  → De: ${email.from} | Asunto: ${email.subject}`);
+      emails.push(email);
     } catch (err) {
       console.log(`  ⚠️  Error procesando mensaje: ${err.message}`);
     }
@@ -413,21 +357,13 @@ async function buildRawMime(options) {
 // GUARDAR BORRADOR EN IMAP
 // ============================================================================
 async function saveDraftToIMAP(connection, rawMime, draftsFolder, subject) {
-  return new Promise((resolve, reject) => {
-    connection.imap.append(
-      rawMime,
-      { mailbox: draftsFolder, flags: ['\\Draft', '\\Seen'], date: new Date() },
-      (err) => {
-        if (err) {
-          console.log(`  ⚠️  No se pudo guardar borrador "${subject}": ${err.message}`);
-          reject(err);
-        } else {
-          console.log(`  ✅ Borrador guardado: "${subject}"`);
-          resolve();
-        }
-      }
-    );
-  });
+  try {
+    await appendMessage(connection, draftsFolder, rawMime, { flags: ['\\Draft', '\\Seen'], date: new Date() });
+    console.log(`  ✅ Borrador guardado: "${subject}"`);
+  } catch (err) {
+    console.log(`  ⚠️  No se pudo guardar borrador "${subject}": ${err.message}`);
+    throw err;
+  }
 }
 
 // ============================================================================
@@ -599,7 +535,7 @@ async function runEmailAnalysisAndDrafts() {
 
   } finally {
     if (connection) {
-      try { connection.end(); } catch (_) {}
+      await closeImap(connection);
       console.log('Conexión IMAP cerrada');
     }
   }
@@ -635,16 +571,10 @@ async function processIAFolder() {
       return { count: 0, items: [] };
     }
 
-    await connection.openBox(iaFolder, false);
+    await connection.mailboxOpen(iaFolder);
 
-    const messages = await connection.search(
-      ['UNANSWERED'],
-      {
-        bodies: ['HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)', 'TEXT'],
-        struct: true,
-        markSeen: false,
-      }
-    );
+    const uids = await searchUids(connection, { answered: false });
+    const messages = await fetchMessages(connection, uids, { references: true });
 
     if (messages.length === 0) {
       console.log('📭 [IA] Sin correos pendientes');
@@ -654,36 +584,11 @@ async function processIAFolder() {
     console.log(`📧 [IA] ${messages.length} correo(s) a procesar`);
 
     for (const msg of messages) {
-      const uid = msg.attributes.uid;
+      const uid = msg.uid;
       try {
-        const headerPart = (msg.parts || []).find(p => p.which && p.which.startsWith('HEADER'));
-        const headers    = (headerPart && headerPart.body) ? headerPart.body : {};
-
-        const from      = (headers.from?.[0])          || 'Desconocido';
-        const subject   = (headers.subject?.[0])        || '(sin asunto)';
-        const dateStr   = (headers.date?.[0])           || '';
-        const messageId = (headers['message-id']?.[0])  || '';
-        const inReplyTo = (headers['in-reply-to']?.[0]) || '';
-        const references= (headers.references?.[0])     || '';
-        const date      = dateStr ? new Date(dateStr) : new Date();
-
-        let body = '';
-        try {
-          const parts = ImapSimple.getParts(msg.attributes.struct);
-          for (const part of parts) {
-            if (part.type !== 'text') continue;
-            const data = await connection.getPartData(msg, part);
-            const text = data.toString();
-            if (part.subtype === 'plain')            { body = text; break; }
-            else if (part.subtype === 'html' && !body) { body = stripHtml(text); }
-          }
-        } catch (_) { body = '(no se pudo obtener el cuerpo)'; }
-
-        const email = {
-          from, to: CONFIG.ionos_email, subject, date,
-          messageId, inReplyTo, references,
-          body: body.trim().substring(0, CONFIG.max_body_chars),
-        };
+        const email = await readEmail(connection, msg);
+        email.to = CONFIG.ionos_email;
+        const { from, subject, messageId } = email;
 
         // Tipo de contestación elegido en Telegram al mandar el correo a IA
         // (acuse, positiva, negativa o desarrollada según sus comentarios).
@@ -706,18 +611,17 @@ async function processIAFolder() {
           subject:    `Re: ${subject.replace(/^Re:\s*/i, '')}`,
           text:       draftText,
           inReplyTo:  messageId,
-          references: [references, messageId].filter(Boolean).join(' '),
+          references: [email.references, messageId].filter(Boolean).join(' '),
         });
 
         await saveDraftToIMAP(connection, raw, draftsFolder, subject);
 
         // Marcar como respondido para no reprocesar
-        await new Promise(resolve => {
-          connection.imap.uid.addFlags(uid, ['\\Answered'], err => {
-            if (err) console.log(`  ⚠️  No se pudo marcar UID ${uid}: ${err.message}`);
-            resolve();
-          });
-        });
+        try {
+          await markAnswered(connection, uid);
+        } catch (err) {
+          console.log(`  ⚠️  No se pudo marcar UID ${uid}: ${err.message}`);
+        }
 
         created.push({
           from, subject,
@@ -737,9 +641,7 @@ async function processIAFolder() {
     return { count: created.length, items: created };
 
   } finally {
-    if (connection) {
-      try { connection.end(); } catch (_) {}
-    }
+    await closeImap(connection);
   }
 }
 
