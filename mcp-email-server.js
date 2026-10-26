@@ -13,6 +13,7 @@ const {
   withRetry,
   getImapConfigFromEnv,
   connectToImap,
+  closeImap,
   fetchEmails,
   parseSearchQuery,
   searchEmails,
@@ -36,7 +37,7 @@ async function withImapConnection(fn) {
   try {
     return await fn(connection);
   } finally {
-    try { await connection.end(); } catch { /* noop */ }
+    await closeImap(connection);
   }
 }
 

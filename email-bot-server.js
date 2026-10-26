@@ -5,13 +5,13 @@
 
 const express = require('express');
 const cron = require('node-cron');
-const ImapSimple = require('imap-simple');
 const { simpleParser } = require('mailparser');
 const axios = require('axios');
 require('dotenv').config();
 
 // Módulo de análisis de correos y borradores (arranca su propio cron al importarse)
 const { runEmailAnalysisAndDrafts } = require('./email-analysis-drafts');
+const { connectToImap, closeImap, fetchEmails: fetchInboxEmails } = require('./lib/imap-client');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -75,20 +75,13 @@ async function withRetry(fn, retries = 3, delayMs = 1000) {
 // CONECTAR A IONOS IMAP
 // ============================================================================
 async function connectToIonos() {
-  const config = {
-    imap: {
+  try {
+    const connection = await connectToImap({
       user: CONFIG.ionos_email,
       password: CONFIG.ionos_password,
       host: CONFIG.ionos_imap_host,
       port: CONFIG.ionos_imap_port,
-      tls: true,
-      authTimeout: 10000,
-      tlsOptions: { rejectUnauthorized: true }
-    }
-  };
-
-  try {
-    const connection = await ImapSimple.connect(config);
+    });
     console.log('✅ Conectado a Ionos IMAP');
     return connection;
   } catch (error) {
@@ -102,70 +95,10 @@ async function connectToIonos() {
 // ============================================================================
 async function fetchEmails(connection, { days = null, last = 50 } = {}) {
   try {
-    await connection.openBox('INBOX', false);
-
-    let searchCriteria = ['ALL'];
-    let cutoff = null;
-
-    if (days) {
-      cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      const sinceDate = `${cutoff.getDate()}-${months[cutoff.getMonth()]}-${cutoff.getFullYear()}`;
-      searchCriteria = [['SINCE', sinceDate]];
-      console.log(`🔍 Buscando correos de los últimos ${days} días (desde ${sinceDate})...`);
-    } else {
-      console.log(`🔍 Buscando últimos ${last} correos...`);
-    }
-
-    const fetchOptions = {
-      bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)',
-      struct: true
-    };
-
-    const allMessages = await connection.search(searchCriteria, fetchOptions);
-    console.log(`📧 Se encontraron ${allMessages.length} correos`);
-
-    // Sin filtro de fecha: tomar los últimos N
-    const messages = days
-      ? allMessages
-      : allMessages.slice(Math.max(0, allMessages.length - last));
-
-    const emails = [];
-
-    for (let msg of messages) {
-      try {
-        const from = (msg.headers?.from?.[0]) || 'Desconocido';
-        const subject = (msg.headers?.subject?.[0]) || '(sin asunto)';
-        const dateStr = (msg.headers?.date?.[0]) || new Date().toISOString();
-
-        let date = new Date(dateStr);
-        if (isNaN(date.getTime())) date = new Date();
-
-        let preview = '';
-        try {
-          const parts = ImapSimple.getParts(msg.attributes.struct);
-          for (let part of parts) {
-            if (part.type === 'text') {
-              const partData = await connection.getPartData(msg, part);
-              preview = partData.toString().substring(0, 200).replace(/\n/g, ' ');
-              break;
-            }
-          }
-        } catch (err) {
-          preview = '(no se pudo obtener preview)';
-        }
-
-        emails.push({ from, subject, preview: preview || '(sin contenido)', date, uid: msg.attributes.uid });
-      } catch (err) {
-        console.log(`⚠️ Error procesando correo: ${err.message}`);
-      }
-    }
-
-    // Filtrar por cutoff si aplica
-    const filtered = cutoff ? emails.filter(e => e.date >= cutoff) : emails;
-    console.log(`✅ ${filtered.length} correos procesados`);
-    return filtered.sort((a, b) => b.date - a.date);
-
+    console.log(days ? `🔍 Buscando correos de los últimos ${days} días...` : `🔍 Buscando últimos ${last} correos...`);
+    const emails = await fetchInboxEmails(connection, { days, last });
+    console.log(`✅ ${emails.length} correos procesados`);
+    return emails;
   } catch (error) {
     console.error('❌ Error obteniendo correos:', error.message);
     throw error;
@@ -352,7 +285,7 @@ async function sendDailyEmailSummary(chatId = null) {
     }
   } finally {
     if (connection) {
-      try { await connection.end(); } catch (e) {}
+      await closeImap(connection);
       console.log('Conexión IMAP cerrada');
     }
   }
@@ -388,7 +321,7 @@ async function sendWeeklyEmailSummary() {
     }
   } finally {
     if (connection) {
-      try { await connection.end(); } catch (e) {}
+      await closeImap(connection);
       console.log('Conexión IMAP cerrada');
     }
   }

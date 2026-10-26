@@ -15,7 +15,10 @@ require('dotenv').config();
 const { runEmailAnalysisAndDrafts, processIAFolder } = require('./email-analysis-drafts');
 const {
   connectToImap,
-  extractHeaders,
+  closeImap,
+  searchUids,
+  fetchMessages,
+  fetchMessageByUid,
   fetchEmails,
   parseSearchQuery,
   searchEmails,
@@ -292,7 +295,7 @@ async function sendDailyEmailSummary(chatId = null) {
     console.error('❌ Error en resumen diario:', error.message);
     try { await sendEmailTelegram(`❌ Error al generar resumen:\n\`\`\`\n${error.message}\n\`\`\``, chatId); } catch {}
   } finally {
-    if (connection) { try { await connection.end(); } catch {} }
+    await closeImap(connection);
   }
 }
 
@@ -311,7 +314,7 @@ async function sendWeeklyEmailSummary() {
     console.error('❌ Error en resumen semanal:', error.message);
     try { await sendEmailTelegram(`❌ Error en resumen semanal:\n\`\`\`\n${error.message}\n\`\`\``); } catch {}
   } finally {
-    if (connection) { try { await connection.end(); } catch {} }
+    await closeImap(connection);
   }
 }
 
@@ -374,7 +377,7 @@ async function handleEmailSearch(chatId, rawQuery, { forceUnread = false } = {})
     console.error('❌ Error en búsqueda de correos:', error.message);
     await sendTelegramChunks(`❌ Error al buscar correos:\n\`\`\`\n${error.message}\n\`\`\``, chatId);
   } finally {
-    if (connection) { try { await connection.end(); } catch {} }
+    await closeImap(connection);
   }
 }
 
@@ -425,16 +428,12 @@ async function clearInlineKeyboard(chatId, messageId) {
 // para poder asociarle el tipo de respuesta, porque al mover el correo a la
 // carpeta IA el UID cambia.
 async function readInboxHeaders(connection, uid) {
-  const messages = await connection.search([['UID', String(uid)]], {
-    bodies: 'HEADER.FIELDS (FROM SUBJECT MESSAGE-ID)',
-    markSeen: false,
-  });
-  if (!messages.length) return null;
-  const headers = extractHeaders(messages[0]);
+  const message = await fetchMessageByUid(connection, uid);
+  if (!message) return null;
   return {
-    from:      headers.from?.[0] || '',
-    subject:   headers.subject?.[0] || '(sin asunto)',
-    messageId: headers['message-id']?.[0] || '',
+    from:      message.from,
+    subject:   message.subject || '(sin asunto)',
+    messageId: message.messageId,
   };
 }
 
@@ -444,7 +443,7 @@ async function handleMoveToIA(chatId, uid, intentType = 'acuse', comments = '') 
   let connection;
   try {
     connection = await withRetry(() => connectToIonos());
-    await connection.openBox('INBOX', false);
+    await connection.mailboxOpen('INBOX');
     const iaFolder = await findFolderByName(connection, 'IA', ['INBOX.IA', 'INBOX/IA', 'IA']);
     if (!iaFolder) {
       await sendTelegramChunks('⚠️ No se encontró la carpeta *IA* en el buzón. Créala en tu cliente de correo.', chatId);
@@ -470,7 +469,7 @@ async function handleMoveToIA(chatId, uid, intentType = 'acuse', comments = '') 
     console.error('❌ Error moviendo correo a IA:', error.message);
     await sendTelegramChunks(`❌ Error moviendo el correo a IA:\n\`\`\`\n${error.message}\n\`\`\``, chatId);
   } finally {
-    if (connection) { try { await connection.end(); } catch {} }
+    await closeImap(connection);
   }
 }
 
@@ -486,25 +485,22 @@ async function handleSearchDebug(chatId, rawQuery) {
     connection = await withRetry(() => connectToIonos());
     lines.push('🌐 Conexión IMAP: ✅ OK');
 
-    await connection.openBox('INBOX', false);
-    const all = await connection.search(['ALL'], { bodies: 'HEADER.FIELDS (FROM SUBJECT DATE)' });
-    lines.push(`📬 Correos en INBOX: ${all.length}`);
+    await connection.mailboxOpen('INBOX');
+    const uids = await searchUids(connection, { all: true });
+    lines.push(`📬 Correos en INBOX: ${uids.length}`);
 
-    const recent = all.slice(-3).reverse();
+    const recent = (await fetchMessages(connection, uids.slice(-3))).reverse();
     if (recent.length > 0) {
       lines.push('');
       lines.push('*Últimos 3 correos (cabecera cruda):*');
       for (const msg of recent) {
-        const headers = extractHeaders(msg);
-        const from = headers.from?.[0] || '(sin remitente)';
-        const subject = headers.subject?.[0] || '(sin asunto)';
-        lines.push(`• ${subject} — ${from}`);
+        lines.push(`• ${msg.subject || '(sin asunto)'} — ${msg.from || '(sin remitente)'}`);
       }
     }
   } catch (err) {
     lines.push(`🌐 Conexión IMAP: ❌ ${err.message}`);
   } finally {
-    if (connection) { try { await connection.end(); } catch {} }
+    await closeImap(connection);
   }
 
   if (rawQuery) {
